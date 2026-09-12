@@ -1,0 +1,31 @@
+[project]
+name = "v1"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "beautifulsoup4>=4.15.0",
+    "ddgs>=9.16.0",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.1",
+    "langchain-chroma>=1.1.0",
+    "langchain-core>=1.6.3",
+    "langchain-mcp-adapters>=0.3.2",
+    "langchain-ollama>=1.1.0",
+    "mcp>=1.30.0",
+    "ollama>=0.6.2",
+    "pydantic>=2.13.5",
+    "pypdf>=6.18.1",
+    "pytest>=9.1.1",
+    "rank-bm25>=0.2.2",
+    "rich>=15.0.0",
+    "tiktoken>=0.14.0",
+]
+
+[project.scripts]
+v1 = "v1:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"

@@ -1,0 +1,17 @@
+beautifulsoup4==4.15.0
+ddgs==9.16.0
+fastapi==0.141.1
+httpx==0.28.1
+langchain_chroma==1.1.0
+langchain_core==1.6.3
+langchain_mcp_adapters==0.3.2
+langchain_ollama==1.1.0
+mcp==2.2.0
+ollama==0.6.2
+openvino==2026.3.1
+pydantic==2.13.5
+pypdf==6.18.1
+pytest==9.1.1
+rank_bm25==0.2.2
+rich==15.0.0
+tiktoken==0.14.0
