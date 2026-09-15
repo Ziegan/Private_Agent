@@ -463,26 +463,12 @@ ollama list
    python main.py  # Recreates DB
    ```
 
-## 📝 Contributing
-
-We welcome contributions! Areas of interest:
-
-- **Tool expansion** — Add new sandboxed tools (e.g., database clients, image processing)
-- **MCP integrations** — Test and optimize MCP server compatibility
-- **Performance** — Optimize RAG indexing, context window usage
-- **Security** — Report vulnerabilities responsibly via GitHub Security Advisory
-- **Testing** — Expand test coverage, add integration tests
-
 ### Development Setup
 
 ```bash
 pip install -r requirements.txt
 pytest tests/  # Run test suite
 ```
-
-## 📄 License
-
-MIT License — See LICENSE file for details
 
 ## 🚀 What's Included
 
