@@ -490,5 +490,3 @@ This project currently features:
 - **Security**: Report via [GitHub Security Advisory](https://github.com/Ziegan/Private_Agent/security/advisories)
 
 ---
-
-**Made with ❤️ by the Private Agent community**
