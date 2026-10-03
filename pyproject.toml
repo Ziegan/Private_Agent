@@ -1,31 +1,50 @@
 [project]
-name = "v1"
+name = "private-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "Local-first private AI assistant with Ollama, local memory, RAG, and tools"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.10"
 dependencies = [
-    "beautifulsoup4>=4.15.0",
-    "ddgs>=9.16.0",
-    "fastapi>=0.141.1",
-    "httpx>=0.28.1",
-    "langchain-chroma>=1.1.0",
-    "langchain-core>=1.6.3",
-    "langchain-mcp-adapters>=0.3.2",
-    "langchain-ollama>=1.1.0",
-    "mcp>=1.30.0",
-    "ollama>=0.6.2",
-    "pydantic>=2.13.5",
-    "pypdf>=6.18.1",
-    "pytest>=9.1.1",
-    "rank-bm25>=0.2.2",
-    "rich>=15.0.0",
-    "tiktoken>=0.14.0",
+    "beautifulsoup4==4.15.0",
+    "httpx==0.28.1",
+    "httpcore==1.0.9",
+    "langchain-chroma==1.1.0",
+    "langchain-core==1.6.3",
+    "langchain-mcp-adapters==0.3.2",
+    "langchain-ollama==1.1.0",
+    "langchain-openai==1.1.0",
+    "mcp>=1.24.0,<2.0.0",
+    "ollama==0.6.2",
+    "pydantic==2.13.5",
+    "pypdf==6.18.1",
+    "rank-bm25==0.2.2",
+    "rich==15.0.0",
+    "tiktoken==0.14.0",
 ]
 
 [project.scripts]
-v1 = "v1:main"
+private-agent = "main:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "ruff==0.16.10",
+]
+media = [
+    "opencv-python-headless>=4.10,<5",
+    "sounddevice>=0.5,<1",
+    "faster-whisper>=1.1,<2",
+]
 
 [build-system]
-requires = ["uv_build>=0.12.3,<0.13.0"]
-build-backend = "uv_build"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src", "src.*"]
+namespaces = true

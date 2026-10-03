@@ -1,8 +1,11 @@
 import pathlib
+import re
 from typing import Optional, Dict
 from rich.console import Console
 
 console = Console()
+MAX_SKILL_DESCRIPTION_CHARS = 500
+MAX_SKILL_INSTRUCTION_CHARS = 20_000
 
 class AgentSkill:
     def __init__(self, name: str, description: str, system_prompt: str, max_iterations: int = 15):
@@ -31,6 +34,49 @@ def load_skills_from_folder(folder_path: str) -> Dict[str, AgentSkill]:
         except Exception as e:
             console.print(f"[red][Warning] Failed loading markdown skill file {md_file.name}: {e}[/red]")
     return skills
+
+
+def create_skill_file(
+    folder_path: str,
+    name: str,
+    description: str,
+    instructions: str,
+) -> pathlib.Path:
+    """Create one validated Markdown skill without replacing an existing file."""
+    normalized_name = re.sub(r"[\s-]+", "_", name.strip().lower())
+    if (
+        not normalized_name
+        or len(normalized_name) > 64
+        or not re.fullmatch(r"[a-z0-9_]+", normalized_name)
+    ):
+        raise ValueError(
+            "Skill name must be 1-64 characters using letters, numbers, "
+            "spaces, hyphens, or underscores."
+        )
+    description = description.strip()
+    instructions = instructions.strip()
+    if not description or len(description) > MAX_SKILL_DESCRIPTION_CHARS:
+        raise ValueError(
+            f"Skill description must contain 1-{MAX_SKILL_DESCRIPTION_CHARS} characters."
+        )
+    if not instructions or len(instructions) > MAX_SKILL_INSTRUCTION_CHARS:
+        raise ValueError(
+            f"Skill instructions must contain 1-{MAX_SKILL_INSTRUCTION_CHARS} characters."
+        )
+
+    directory = pathlib.Path(folder_path).expanduser().resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{normalized_name}.md"
+    content = f"# {name.strip()}\n\n{description}\n\n{instructions}\n"
+    try:
+        with target.open("x", encoding="utf-8") as skill_file:
+            skill_file.write(content)
+    except FileExistsError as exc:
+        raise FileExistsError(
+            f"Skill '{normalized_name}' already exists; no file was changed."
+        ) from exc
+    return target
+
 
 def match_skill_by_relevancy(user_input: str, loaded_skills: Dict[str, AgentSkill]) -> Optional[AgentSkill]:
     """Matches the most relevant loaded skill using weighted keyword-token overlap to prevent false-positive activations."""
