@@ -2,7 +2,6 @@ import os
 import pathlib
 import json
 import hashlib
-import heapq
 import tempfile
 import shutil
 from datetime import datetime, timezone
@@ -23,10 +22,10 @@ from ..config import (
     RAG_MAX_PDF_PAGES,
     RAG_CHUNK_SIZE_CHARS,
     RAG_CHUNK_OVERLAP_CHARS,
-    RAG_SIMILARITY_RESULTS,
 )
 from ..hardware import ollama_acceleration_options
 from ..tools import ollama_langchain_client_kwargs, track_ollama_http_clients
+from .retrieval import HybridRAGRetriever
 
 console = Console()
 
@@ -49,57 +48,6 @@ def reset_knowledge_base(index_path: Optional[str] = None) -> str:
     if target.exists():
         shutil.rmtree(target)
     return str(target)
-
-
-class HybridRAGRetriever:
-    """Combines Chroma vector similarity search with BM25 lexical keyword search for high-precision hybrid retrieval."""
-    def __init__(self, vectorstore: Chroma, documents: List[Document]):
-        self.vectorstore = vectorstore
-        self.documents = documents
-        self.bm25 = None
-        
-        try:
-            from rank_bm25 import BM25Okapi
-            if documents:
-                tokenized_corpus = [doc.page_content.lower().split() for doc in documents]
-                self.bm25 = BM25Okapi(tokenized_corpus)
-        except ImportError:
-            console.print("[yellow][Warning] 'rank_bm25' package not found. Falling back to pure vector similarity search.[/yellow]")
-
-    def similarity_search(
-        self, query: str, k: int = RAG_SIMILARITY_RESULTS
-    ) -> List[Document]:
-        vector_results = self.vectorstore.similarity_search(query, k=k)
-        
-        if not self.bm25 or not self.documents:
-            return vector_results
-
-        tokenized_query = query.lower().split()
-        bm25_scores = self.bm25.get_scores(tokenized_query)
-        
-        top_scored_docs = heapq.nsmallest(
-            k,
-            enumerate(bm25_scores),
-            key=lambda item: (-item[1], item[0]),
-        )
-        top_bm25_indices = [
-            idx for idx, score in top_scored_docs if score > 0
-        ]
-        bm25_results = [self.documents[idx] for idx in top_bm25_indices]
-
-        seen = set()
-        hybrid_results = []
-        for doc in vector_results + bm25_results:
-            source = (
-                doc.metadata.get("source", ""),
-                doc.metadata.get("chunk", doc.page_content[:30]),
-            )
-            if source not in seen:
-                seen.add(source)
-                hybrid_results.append(doc)
-            if len(hybrid_results) >= k:
-                break
-        return hybrid_results
 
 
 def _split_into_chunks(

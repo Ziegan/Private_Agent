@@ -5,11 +5,8 @@ import inspect
 import uuid
 import re
 import sqlite3
-from datetime import datetime
-from functools import lru_cache
 from getpass import getpass
 from typing import Any, Dict, List, Optional, Sequence
-from urllib.parse import urlsplit, urlunsplit
 from rich.console import Console
 from rich.panel import Panel
 
@@ -23,7 +20,7 @@ from langchain_core.messages import (
 )
 from langchain_ollama import ChatOllama
 
-from .config import (
+from ..config import (
     CONFIG_FILE_PATH,
     DEFAULT_DB_PATH,
     WORKSPACE_ROOT_DEFAULT,
@@ -59,9 +56,9 @@ from .config import (
     MCP_SERVERS,
     MCP_AUTO_APPROVE_TOOLS,
 )
-from .database import PersistentMemory
-from .sandbox import SandboxManager
-from .tools import (
+from ..database import PersistentMemory
+from ..sandbox import SandboxManager
+from ..tools import (
     AVAILABLE_TOOLS,
     NETWORK_TOOL_NAMES,
     LOCAL_MEDIA_TOOL_NAMES,
@@ -83,23 +80,44 @@ from .tools import (
     set_active_skill_runtime,
     approved_tool_invocation,
 )
-from .rag import initialize_knowledge_base, reset_knowledge_base
-from .skills import load_skills_from_folder, match_skill_by_relevancy
-from .code_tasks import (
+from ..rag import initialize_knowledge_base, reset_knowledge_base
+from ..skills import load_skills_from_folder, match_skill_by_relevancy
+from ..code_tasks import (
     CodeTaskWorkspace,
     checkpoint_code_task,
     finalize_code_task,
     is_code_task_request,
     run_project_unit_tests,
 )
-from . import code_tasks as code_tasks_module
-from .hardware import (
+from .. import code_tasks as code_tasks_module
+from ..hardware import (
     format_hardware_status,
     inspect_ollama_hardware,
     ollama_acceleration_options,
 )
-from .run_logging import RUN_LOGGER
-from .tools.media_tools import (
+from ..run_logging import RUN_LOGGER
+from .prompts import (
+    build_bounded_user_input as _build_bounded_user_input,
+    current_datetime_context as _current_datetime_context,
+    estimate_context_window,
+    token_count as _token_count,  # noqa: F401
+    trim_history_to_context_budget,
+)
+from ..rag.citations import format_retrieved_citations
+from .providers import (
+    create_local_chat_model as _create_local_chat_model,
+    create_robust_local_chat_model as _create_robust_local_chat_model,
+    inspect_local_model_capabilities as _inspect_local_model_capabilities,
+    online_request_failure as _online_request_failure,
+    select_online_model as _select_online_model,
+    validate_online_base_url as _validate_online_base_url,
+)
+from .permissions import (
+    authorize_network_research as _authorize_network_research,
+    select_permission_mode as _select_permission_mode_impl,
+    tool_needs_permission as _tool_needs_permission_impl,
+)
+from ..tools.media import (
     approve_local_capture,
     captured_image_message,
     clear_captured_images,
@@ -108,17 +126,6 @@ from .tools.media_tools import (
 console = Console()
 _ACTIVE_MEMORY: Optional[PersistentMemory] = None
 _MODEL_CAPABILITIES_CACHE: Dict[tuple[str, str], Dict[str, Optional[bool]]] = {}
-
-
-def _current_datetime_context() -> str:
-    now = datetime.now().astimezone()
-    return (
-        "Current local date and time from the system clock: "
-        f"{now:%A, %B} {now.day}, {now.year}; "
-        f"{now:%H:%M:%S %Z} (UTC{now:%z}). "
-        "Use this as the authoritative current date/time when answering; "
-        "do not infer it from model knowledge or conversation history."
-    )
 
 
 def _close_ollama_client(client):
@@ -142,67 +149,18 @@ def _print_tool_catalog(entries):
         )
 
 
-def _response_field(response: Any, key: str, default: Any = None) -> Any:
-    if isinstance(response, dict):
-        return response.get(key, default)
-    return getattr(response, key, default)
-
-
 def inspect_model_capabilities(model_name: str) -> Dict[str, Optional[bool]]:
-    """Read Ollama's declared model capabilities without guessing from its name."""
-    cache_key = (OLLAMA_BASE_URL, model_name)
-    cached = _MODEL_CAPABILITIES_CACHE.get(cache_key)
-    if cached is not None:
-        return cached.copy()
-
-    result: Dict[str, Optional[bool]] = {
-        "tools": None,
-        "function_calls": None,
-        "structured_output": None,
-        "thinking": None,
-        "vision": None,
-        "audio": None,
-    }
-    client = None
-    try:
-        client = ollama.Client(
-            host=OLLAMA_BASE_URL, **ollama_client_kwargs()
-        )
-        details = client.show(model_name)
-    except Exception as exc:
-        console.print(f"[yellow][Model capabilities] Could not inspect {model_name}: {exc}[/yellow]")
-        return result
-    finally:
-        if client is not None:
-            _close_ollama_client(client)
-
-    raw_capabilities = _response_field(details, "capabilities", [])
-    if not raw_capabilities:
-        model_info = _response_field(details, "modelinfo", {}) or {}
-        raw_capabilities = model_info.get("capabilities", []) if isinstance(model_info, dict) else []
-    if not raw_capabilities:
-        if len(_MODEL_CAPABILITIES_CACHE) >= MAX_MODEL_CAPABILITY_CACHE_ENTRIES:
-            _MODEL_CAPABILITIES_CACHE.clear()
-        _MODEL_CAPABILITIES_CACHE[cache_key] = result.copy()
-        return result
-
-    names = {
-        str(item).lower()
-        for item in raw_capabilities
-        if isinstance(item, (str, int, float))
-    }
-    result.update(
-        tools="tools" in names,
-        function_calls="tools" in names,
-        structured_output=("structured_output" in names) if "structured_output" in names else None,
-        thinking="thinking" in names,
-        vision="vision" in names,
-        audio="audio" in names,
+    """Compatibility entry point for Ollama capability discovery."""
+    return _inspect_local_model_capabilities(
+        model_name,
+        base_url=OLLAMA_BASE_URL,
+        client_factory=ollama.Client,
+        client_kwargs=ollama_client_kwargs,
+        capability_cache=_MODEL_CAPABILITIES_CACHE,
+        max_cache_entries=MAX_MODEL_CAPABILITY_CACHE_ENTRIES,
+        console=console,
+        close_client=_close_ollama_client,
     )
-    if len(_MODEL_CAPABILITIES_CACHE) >= MAX_MODEL_CAPABILITY_CACHE_ENTRIES:
-        _MODEL_CAPABILITIES_CACHE.clear()
-    _MODEL_CAPABILITIES_CACHE[cache_key] = result.copy()
-    return result
 
 
 def get_robust_chat_model(
@@ -214,45 +172,21 @@ def get_robust_chat_model(
     base_url: str = OLLAMA_BASE_URL,
     thinking: Optional[bool | str] = None,
 ):
-    """Create a local model client, retrying once with the provided fallback."""
-    last_error: Optional[Exception] = None
-    for model_name in dict.fromkeys((primary_model_name, fallback_model_name)):
-        try:
-            options: Dict[str, Any] = {
-                "model": model_name,
-                "temperature": temperature,
-                "base_url": base_url,
-            }
-            options.update(ollama_langchain_client_kwargs())
-            options.update(ollama_acceleration_options(HARDWARE_ACCELERATION_MODE))
-            if thinking is not None:
-                options["reasoning"] = thinking
-            model = ChatOllama(**options)
-            track_ollama_http_clients(model)
-            return model.bind_tools(list(tools)) if tools is not None else model
-        except Exception as exc:
-            last_error = exc
-            console.print(f"[yellow][Model fallback] {model_name} unavailable: {exc}[/yellow]")
-            message = str(exc).lower()
-            retryable = isinstance(exc, (ConnectionError, TimeoutError)) or any(
-                marker in message
-                for marker in (
-                    "connection refused",
-                    "connection error",
-                    "timed out",
-                    "timeout",
-                    "model not found",
-                    "status code: 404",
-                    "status code: 503",
-                    "does not support tools",
-                    "tool calling is not supported",
-                )
-            )
-            if model_name == primary_model_name and not retryable:
-                break
-    if last_error:
-        console.print(f"[red][Model error] No usable local model: {last_error}[/red]")
-    return None
+    """Compatibility entry point for robust local model construction."""
+    return _create_robust_local_chat_model(
+        primary_model_name,
+        fallback_model_name,
+        tools,
+        temperature=temperature,
+        base_url=base_url,
+        acceleration_mode=HARDWARE_ACCELERATION_MODE,
+        thinking=thinking,
+        chat_model_factory=ChatOllama,
+        client_kwargs=ollama_langchain_client_kwargs,
+        acceleration_options=ollama_acceleration_options,
+        track_clients=track_ollama_http_clients,
+        console=console,
+    )
 
 
 def _make_chat_model(
@@ -262,75 +196,18 @@ def _make_chat_model(
     thinking_effort: str,
     supports_thinking: Optional[bool],
 ):
-    options: Dict[str, Any] = {
-        "model": model_name,
-        "temperature": MODEL_TEMPERATURE,
-        "base_url": OLLAMA_BASE_URL,
-    }
-    options.update(ollama_langchain_client_kwargs())
-    options.update(ollama_acceleration_options(HARDWARE_ACCELERATION_MODE))
-    if supports_thinking:
-        options["reasoning"] = thinking_effort if thinking_enabled else False
-    model = ChatOllama(**options)
-    track_ollama_http_clients(model)
-    return model
-
-
-def _validate_online_base_url(base_url: str) -> str:
-    parsed = urlsplit(base_url.strip())
-    if parsed.scheme not in {"https", "http"} or not parsed.hostname:
-        raise ValueError("Enter a valid HTTP(S) OpenAI-compatible base URL.")
-    try:
-        parsed.port
-    except ValueError as exc:
-        raise ValueError("The API base URL contains an invalid port.") from exc
-    if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ValueError("The API base URL must not contain credentials, query, or fragment data.")
-    host = parsed.hostname.lower()
-    is_local = host in {"localhost", "127.0.0.1", "::1"}
-    if parsed.scheme != "https" and not is_local:
-        raise ValueError("Remote API endpoints must use HTTPS.")
-    path = parsed.path.rstrip("/")
-    if not path.endswith("/v1"):
-        path = f"{path}/v1" if path else "/v1"
-    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
-
-
-def _online_request_failure(exc: Exception) -> str:
-    """Describe provider HTTP failures without exposing response bodies or credentials."""
-    status_code = getattr(exc, "status_code", None)
-    if status_code is None:
-        response = getattr(exc, "response", None)
-        status_code = getattr(response, "status_code", None)
-    try:
-        status_code = int(status_code)
-    except (TypeError, ValueError):
-        status_code = None
-    if status_code is None:
-        return (
-            f"Online request failed ({type(exc).__name__}); check connectivity, "
-            "endpoint, model, and credentials. Provider response details were not logged."
-        )
-
-    explanations = {
-        400: "the provider rejected the request; the model or request format may be unsupported",
-        401: "the provider rejected authentication; verify the API key",
-        403: "the provider denied access to this model or account",
-        404: "the endpoint or model was not found",
-        408: "the provider timed out processing the request",
-        413: "the request exceeded the provider's size limit",
-        422: "the provider could not process the request or model parameters",
-        429: "the provider rate limit or account quota was reached",
-    }
-    explanation = explanations.get(
-        status_code,
-        "the provider returned a server error" if status_code >= 500
-        else "the provider rejected the request",
-    )
-    return (
-        f"Online request failed with HTTP {status_code} ({type(exc).__name__}): "
-        f"{explanation}. Check the selected model, provider access, and request compatibility. "
-        "Response bodies and credentials were not logged."
+    return _create_local_chat_model(
+        model_name,
+        temperature=MODEL_TEMPERATURE,
+        base_url=OLLAMA_BASE_URL,
+        acceleration_mode=HARDWARE_ACCELERATION_MODE,
+        thinking=(
+            thinking_effort if thinking_enabled else False
+        ) if supports_thinking else None,
+        chat_model_factory=ChatOllama,
+        client_kwargs=ollama_langchain_client_kwargs,
+        acceleration_options=ollama_acceleration_options,
+        track_clients=track_ollama_http_clients,
     )
 
 
@@ -361,136 +238,19 @@ def _make_online_chat_model(base_url: str, model_name: str, api_key: str):
 
 
 def select_online_model():
-    """Collect session-only OpenAI-compatible API settings after connectivity check."""
-    if not sys.stdin.isatty():
-        console.print("[yellow]Online mode requires an interactive terminal for secure key entry.[/yellow]")
-        return None
-
-    configured_url = str(APP_CONFIG.get("online_base_url", "https://api.openai.com/v1"))
-    base_input = console.input(
-        f"[cyan]OpenAI-compatible API base URL [{configured_url}]: [/cyan]"
-    ).strip()
-    try:
-        base_url = _validate_online_base_url(base_input or configured_url)
-    except ValueError as exc:
-        console.print(f"[red]Invalid endpoint: {exc}[/red]")
-        return None
-
-    parsed_endpoint = urlsplit(base_url)
-    endpoint_port = parsed_endpoint.port or (443 if parsed_endpoint.scheme == "https" else 80)
-    while not check_internet_connection(
-        parsed_endpoint.hostname or "", endpoint_port, INTERNET_CHECK_TIMEOUT
-    ):
-        choice = console.input(
-            "[yellow]The selected API endpoint is not reachable. Restore access and "
-            "retry (r), or return to local model selection (l)? [/yellow]"
-        ).strip().lower()
-        if choice != "r":
-            return None
-
-    host = urlsplit(base_url).netloc
-    if console.input(
-        f"[yellow]Online mode will send requests to {host}. Continue? \\[y/N]: [/yellow]"
-    ).strip().lower() != "y":
-        return None
-
-    api_key = getpass("API key (input hidden; used for this session only): ").strip()
-    if not api_key:
-        console.print("[red]No API key entered; returning to model selection.[/red]")
-        return None
-
-    model_choices: List[str] = []
-    try:
-        import httpx
-        with public_only_sync_client(
-            headers={"Authorization": "Bearer " + api_key},
-            timeout=ONLINE_MODEL_LIST_TIMEOUT,
-            allow_loopback=True,
-        ) as client:
-            response = client.get(f"{base_url}/models")
-            response.raise_for_status()
-            body = response.json()
-        model_choices = [
-            item["id"] for item in body.get("data", [])
-            if isinstance(item, dict) and isinstance(item.get("id"), str)
-        ]
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code in {401, 403}:
-            console.print(
-                "[red]Provider authentication failed while listing models. "
-                "The API key was not logged; verify the endpoint and key.[/red]"
-            )
-            return None
-        console.print(
-            f"[yellow]Could not list provider models (HTTP "
-            f"{exc.response.status_code}); you can enter a model identifier manually.[/yellow]"
-        )
-    except Exception as exc:
-        console.print(
-            f"[yellow]Could not list provider models ({type(exc).__name__}); "
-            "you can enter a model identifier manually.[/yellow]"
-        )
-
-    configured_model = str(APP_CONFIG.get("online_model") or "")
-    if model_choices:
-        console.print("[bold]Available API models:[/bold]")
-        for index, candidate in enumerate(
-            model_choices[:ONLINE_MODEL_LIST_LIMIT], 1
-        ):
-            console.print(f"  [cyan]{index}.[/cyan] {candidate}")
-        default_model = configured_model if configured_model in model_choices else model_choices[0]
-        model_input = console.input(f"[cyan]Select model number or enter ID [{default_model}]: [/cyan]").strip()
-        if model_input.isdigit() and 1 <= int(model_input) <= min(
-            ONLINE_MODEL_LIST_LIMIT, len(model_choices)
-        ):
-            model_name = model_choices[int(model_input) - 1]
-        else:
-            model_name = model_input or default_model
-    else:
-        model_name = console.input(
-            f"[cyan]Model identifier [{configured_model or 'enter model name'}]: [/cyan]"
-        ).strip() or configured_model
-    if not model_name:
-        console.print("[red]A model identifier is required.[/red]")
-        return None
-
-    console.print(
-        "[yellow]Every user message is sent to this online provider. Local chat "
-        "history, summaries, skills, and RAG documents are excluded unless you "
-        "opt in. Local tool calls can send tool arguments/results to this provider.[/yellow]"
+    return _select_online_model(
+        app_config=APP_CONFIG,
+        console=console,
+        is_interactive=sys.stdin.isatty,
+        validate_base_url=_validate_online_base_url,
+        check_connection=check_internet_connection,
+        connection_timeout=INTERNET_CHECK_TIMEOUT,
+        get_api_key=getpass,
+        model_list_timeout=ONLINE_MODEL_LIST_TIMEOUT,
+        model_list_limit=ONLINE_MODEL_LIST_LIMIT,
+        public_sync_client=public_only_sync_client,
+        model_factory=_make_online_chat_model,
     )
-    share_context = console.input(
-        "[yellow]Allow this online model to receive local history and retrieved "
-        "RAG context for this session? \\[y/N]: [/yellow]"
-    ).strip().lower() == "y"
-    allow_tools = console.input(
-        "[yellow]Allow this online model to call local/MCP tools? Their arguments "
-        "and results will be sent to the provider. \\[y/N]: [/yellow]"
-    ).strip().lower() == "y"
-
-    try:
-        model = _make_online_chat_model(base_url, model_name, api_key)
-    except Exception as exc:
-        console.print(
-            f"[red]Could not initialize online model ({type(exc).__name__}); "
-            "check the endpoint, model, and key. Key details were not logged.[/red]"
-        )
-        return None
-    return {
-        "model": model,
-        "model_name": model_name,
-        "base_url": base_url,
-        "share_context": share_context,
-        "allow_tools": allow_tools,
-        "capabilities": {
-            "tools": None if allow_tools else False,
-            "function_calls": None if allow_tools else False,
-            "structured_output": None,
-            "thinking": None,
-            "vision": None,
-            "audio": None,
-        },
-    }
 
 
 def _supports_async_streaming(model: Any) -> bool:
@@ -627,63 +387,16 @@ async def authorize_network_research(
     *,
     permission_mode: str = "manual",
 ) -> tuple[bool, str]:
-    """Require live connectivity and consent before an external request."""
-    if not ENABLE_WEB_RESEARCH:
-        return False, "Online research is disabled in configuration."
-
-    if not has_internet_connection():
-        if not sys.stdin.isatty():
-            return False, (
-                "Internet connectivity is unavailable. Offline evidence may be "
-                "incomplete; no web request was made."
-            )
-        choice = console.input(
-            "[yellow]Internet is unavailable. Restore access and retry (r), "
-            "continue with incomplete offline data (c), or cancel (x)? [/yellow]"
-        ).strip().lower()
-        if choice == "r":
-            if not has_internet_connection():
-                return False, (
-                    "Internet connectivity is still unavailable. No web request "
-                    "was made; offline evidence may be incomplete."
-                )
-        elif choice == "c":
-            return False, (
-                "The user chose to continue without online research. Offline "
-                "evidence may be incomplete; do not claim current facts were verified."
-            )
-        else:
-            return False, "Online research was cancelled by the user."
-
-    if WEB_RESEARCH_CONSENT == "never":
-        return False, "Online research is disabled by the configured consent policy."
-    if permission_mode == "manual":
-        if not sys.stdin.isatty():
-            return False, "Online search requires interactive user consent."
-        request_summary = (
-            tool_args.get("query")
-            or tool_args.get("url")
-            or "request details unavailable"
-        )
-        choice = console.input(
-            f"[yellow]'{tool_name}' will send this to an external service: "
-            f"{request_summary}\nProceed? \\[y/N]: [/yellow]"
-        ).strip().lower()
-        if choice != "y":
-            return False, "Online research was not approved; use offline evidence only."
-    return True, ""
-
-
-_MUTATING_TOOL_NAMES = frozenset({
-    "edit_local_file",
-    "run_shell_command",
-    "download_web_file",
-    "delete_chat_history_from_sqlite",
-    "create_skill",
-    "run_project_unit_tests",
-    "checkpoint_code_task",
-    "finalize_code_task",
-})
+    return await _authorize_network_research(
+        tool_name,
+        tool_args,
+        permission_mode=permission_mode,
+        enabled=ENABLE_WEB_RESEARCH,
+        consent_policy=WEB_RESEARCH_CONSENT,
+        internet_check=has_internet_connection,
+        console=console,
+        is_interactive=sys.stdin.isatty,
+    )
 
 
 def _tool_needs_permission(
@@ -692,35 +405,22 @@ def _tool_needs_permission(
     *,
     network_authorized: bool = False,
 ) -> bool:
-    if permission_mode == "full":
-        return False
-    if permission_mode == "manual":
-        return name not in NETWORK_TOOL_NAMES or not network_authorized
-    return (
-        name in _MUTATING_TOOL_NAMES
-        or name in MCP_TOOL_NAMES and name not in MCP_AUTO_APPROVE_TOOLS
+    return _tool_needs_permission_impl(
+        name,
+        permission_mode,
+        network_authorized=network_authorized,
+        network_tool_names=NETWORK_TOOL_NAMES,
+        mcp_tool_names=MCP_TOOL_NAMES,
+        mcp_auto_approve_tools=MCP_AUTO_APPROVE_TOOLS,
     )
 
 
 def _select_permission_mode() -> str:
-    configured = AGENT_PERMISSION_MODE
-    labels = {
-        "manual": "Manual — ask before every tool action",
-        "auto": "Auto — read/search freely; ask before edits and command execution",
-        "full": "Full — approve all tool calls for this session",
-    }
-    if not sys.stdin.isatty():
-        return configured
-    console.print("[bold cyan][Agent Permission Mode][/bold cyan]")
-    for number, mode in enumerate(("manual", "auto", "full"), 1):
-        console.print(f"  {number}. {labels[mode]}")
-    selection = console.input(
-        f"Choose permission mode [1/2/3] (default: {configured}): "
-    ).strip().lower()
-    if not selection:
-        return configured
-    modes = {"1": "manual", "2": "auto", "3": "full"}
-    return modes.get(selection, configured)
+    return _select_permission_mode_impl(
+        AGENT_PERMISSION_MODE,
+        console,
+        sys.stdin.isatty,
+    )
 
 
 def _offer_local_data_reset(memory: PersistentMemory) -> None:
@@ -781,139 +481,6 @@ def fetch_local_chat_models() -> List[str]:
     finally:
         if client is not None:
             _close_ollama_client(client)
-
-@lru_cache(maxsize=1)
-def _get_tokenizer():
-    try:
-        import tiktoken
-
-        return tiktoken.get_encoding("cl100k_base")
-    except Exception:
-        return None
-
-
-def estimate_context_window(
-    chat_history: list,
-    current_input: str,
-    max_context: int = MAX_CONTEXT_TOKENS,
-) -> dict:
-    total_chars = len(current_input)
-    for msg in chat_history:
-        content = msg.content
-        content_str = "".join([str(c) for c in content]) if isinstance(content, list) else str(content)
-        total_chars += len(content_str)
-    
-    encoding = _get_tokenizer()
-    if encoding is not None:
-        try:
-            estimated_tokens = len(
-                encoding.encode(
-                    current_input + "".join(str(msg.content) for msg in chat_history)
-                )
-            )
-        except Exception:
-            estimated_tokens = int(total_chars / 3.5)
-    else:
-        estimated_tokens = int(total_chars / 3.5)
-
-    percentage = min(100.0, (estimated_tokens / max_context) * 100)
-    return {"tokens": estimated_tokens, "max": max_context, "percent": round(percentage, 2)}
-
-
-def trim_history_to_context_budget(
-    chat_history: list,
-    current_input: str,
-    max_context_tokens: int = MAX_CONTEXT_TOKENS,
-) -> list:
-    """Retain the newest whole messages that fit alongside the current request."""
-    encoding = _get_tokenizer()
-    if encoding is not None:
-        def count(text: str) -> int:
-            try:
-                return len(encoding.encode(text))
-            except Exception:
-                return max(1, len(text) // 4)
-    else:
-        def count(text: str) -> int:
-            return max(1, len(text) // 4)
-
-    remaining = max(0, max_context_tokens - count(current_input))
-    selected = []
-    for message in reversed(chat_history):
-        content = message.content
-        text = "".join(str(item) for item in content) if isinstance(content, list) else str(content)
-        cost = count(text)
-        if cost > remaining:
-            break
-        selected.append(message)
-        remaining -= cost
-    return list(reversed(selected))
-
-
-def _token_count(text: str) -> int:
-    encoding = _get_tokenizer()
-    if encoding is None:
-        return max(1, len(text) // 4)
-    try:
-        return len(encoding.encode(text))
-    except Exception:
-        return max(1, len(text) // 4)
-
-
-def _truncate_to_tokens(text: str, budget: int) -> str:
-    if budget <= 0 or not text:
-        return ""
-    encoding = _get_tokenizer()
-    if encoding is not None:
-        try:
-            return encoding.decode(encoding.encode(text)[:budget])
-        except Exception:
-            return text[: budget * 4]
-
-
-def _build_bounded_user_input(
-    context_label: str,
-    episodic_context: str,
-    rag_context: str,
-    user_input: str,
-    budget: int = MAX_CONTEXT_TOKENS,
-) -> str:
-    prefix = f"{context_label}:\n"
-    suffix = f"\n\n[User Query]: {user_input}"
-    remaining = max(0, budget - _token_count(prefix + suffix) - 8)
-    rag_budget = min(remaining, max(0, int(remaining * 0.7)))
-    bounded_rag = _truncate_to_tokens(rag_context, rag_budget)
-    remaining -= _token_count(bounded_rag) if bounded_rag else 0
-    bounded_episodic = _truncate_to_tokens(episodic_context, remaining)
-    result = f"{prefix}{bounded_episodic}\n{bounded_rag}{suffix}"
-    while _token_count(result) > budget:
-        if bounded_rag:
-            bounded_rag = _truncate_to_tokens(
-                bounded_rag, max(0, _token_count(bounded_rag) - 1)
-            )
-        elif bounded_episodic:
-            bounded_episodic = _truncate_to_tokens(
-                bounded_episodic, max(0, _token_count(bounded_episodic) - 1)
-            )
-        else:
-            return prefix + suffix
-        result = f"{prefix}{bounded_episodic}\n{bounded_rag}{suffix}"
-    return result
-
-
-def format_retrieved_citations(documents: list) -> list[str]:
-    citations = []
-    for document in documents:
-        metadata = getattr(document, "metadata", {}) or {}
-        source = str(metadata.get("source", "local knowledge base"))
-        if metadata.get("page") is not None:
-            source += f" (page {metadata['page']})"
-        if metadata.get("chunk") is not None:
-            source += f" (chunk {metadata['chunk']})"
-        if source not in citations:
-            citations.append(source)
-    return citations
-
 
 def _redact_tool_arguments(value: Any) -> Any:
     if isinstance(value, dict):

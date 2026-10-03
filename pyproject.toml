@@ -23,13 +23,14 @@ dependencies = [
 ]
 
 [project.scripts]
-private-agent = "main:main"
+private-agent = "private_agent.cli:main"
 
 [project.optional-dependencies]
 dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "ruff==0.16.10",
+    "tomli>=2.0.1; python_version < '3.11'",
 ]
 media = [
     "opencv-python-headless>=4.10,<5",
@@ -41,10 +42,7 @@ media = [
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-py-modules = ["main"]
-
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["src", "src.*"]
-namespaces = true
+where = ["src"]
+include = ["private_agent", "private_agent.*"]
+namespaces = false

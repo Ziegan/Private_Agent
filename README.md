@@ -8,11 +8,13 @@ limits.
 
 ## Source layout
 
-Feature code is grouped into importable packages under `src/`: `tools/`
-(including `media_tools.py`), `rag/`, `skills/`, `sandbox/`, `database/`,
-`hardware/`, and `code_tasks/`. `agent.py` coordinates these packages and
-`config.py` provides shared configuration. Existing imports such as
-`from src.rag import initialize_knowledge_base` remain supported.
+The installable Python package is `private_agent`, located under `src/`.
+Feature packages include `tools/` (including `media_tools.py`), `rag/`,
+`skills/`, `sandbox/`, `database/`, `hardware/`, and `code_tasks/`.
+`private_agent.agent` coordinates these packages and `private_agent.config`
+provides shared configuration. `main.py` remains a small source-checkout
+compatibility launcher; the package also supports `python -m private_agent`
+after installation.
 
 ## Privacy and execution boundaries
 
@@ -110,6 +112,9 @@ Feature code is grouped into importable packages under `src/`: `tools/`
    ```sh
    python main.py
    ```
+
+After installing the package, `private-agent` and `python -m private_agent`
+are equivalent entry points.
 
 The first run creates `~/.private_agent.conf` in the current user's home
 directory, regardless of the installation method or launch directory. Older
@@ -338,8 +343,10 @@ passed back to the model. Security invariants such as workspace path checks,
 network address validation, and OS sandbox resource ceilings are intentionally
 not user-configurable.
 
-The same runtime dependencies are listed in `requirements.txt`. Install test
-and lint dependencies with `python -m pip install -e ".[dev]"`.
+`requirements.txt` is generated from the runtime dependencies in
+`pyproject.toml`; after changing those dependencies, regenerate it with
+`python scripts/sync_requirements.py`. Install test and lint dependencies with
+`python -m pip install -e ".[dev]"`.
 `python -m pytest -q` runs the test suite.
 
 The default embedding model in the generated configuration may differ from

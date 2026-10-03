@@ -1,3 +1,5 @@
+"""SQLite-backed conversation history and episodic memory."""
+
 import sqlite3
 import threading
 import pathlib

@@ -98,10 +98,24 @@ class LoggingConsoleAdapter:
 
 def install_logging_console_adapter(adapter: LoggingConsoleAdapter):
     """Install log-mirroring consoles and return their original values."""
-    from . import agent, code_tasks, rag, skills, tools
-    from .tools import media_tools
+    from . import code_tasks, tools
+    from .agent import runtime
+    from .rag import indexing, retrieval
+    from .skills import loader
+    from .tools import media, mcp, network, shell
 
-    modules = (agent, code_tasks, rag, skills, tools, media_tools)
+    modules = (
+        runtime,
+        code_tasks,
+        indexing,
+        retrieval,
+        loader,
+        tools,
+        media,
+        mcp,
+        network,
+        shell,
+    )
     originals = [(module, module.console) for module in modules]
     for module in modules:
         module.console = adapter

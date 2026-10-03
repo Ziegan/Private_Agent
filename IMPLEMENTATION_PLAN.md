@@ -1,96 +1,92 @@
 # Private Agent — Remaining Production Work
 
-This roadmap contains work that is still outstanding. Previously implemented
-items have been removed from the pending list. The project is not yet
-production-ready: WebSocket MCP cannot use the pinned HTTP transport, sandbox
-and lifecycle coverage is incomplete, and the CI/deployment process has not
-been verified on all declared environments.
+This roadmap lists outstanding work and the recommended implementation
+sequence. The project is not yet production-ready: sandbox and lifecycle
+coverage is incomplete, outbound DNS resolution has no enforceable hard
+deadline, and CI/deployment has not been verified on all declared environments.
 
-## Completed and removed from pending scope
+The source-package reorganization, focused test layout, dependency
+source-of-truth, and wheel/sdist smoke workflow are implemented. Do not repeat
+those completed tasks here; extend them only where a remaining release task
+below requires it.
 
-The current implementation already includes local Ollama and explicit
-OpenAI-compatible provider selection; SQLite conversations and bounded recent
-history/context summaries; chunked local RAG; model capability inspection and
-thinking controls; explicitly approved Markdown skill creation and immediate
-activation; a bounded tool loop; configured MCP tool discovery and per-call
-approval; isolated code-task workspaces with local Git checkpoints
-and test gates; Linux Bubblewrap isolation for approved shell commands and
-generated-project tests; bounded and atomically persisted RAG indexing with
-fail-closed damaged-state handling and confirmed timestamped backup/rebuild;
-session-scoped, bounded summaries and configurable retention; token-budgeted
-history/context and separate source citations; SQLite and HTTP client shutdown
-cleanup with MCP tool-registry restoration; peer-validated, IP-pinned HTTP
-transports for web search/fetch/download, Ollama, remote HTTP MCP, and explicit
-Online endpoints; isolated stdio MCP processes on Linux; bounded network
-request time/concurrency; multi-runner code-task testing; MCP tool
-catalog/schema validation; stricter local-model fallback; hardware status
-reporting and CPU policy; the `private-agent` entry point; CI with focused Ruff
-correctness checks; and the current unit suite. These items are not
-repeated as future implementation tasks below. Their remaining limitations
-are listed only where further work is still necessary.
+## Recommended implementation sequence
+
+1. **Prove the current security boundaries.** Baseline tests now exercise
+   credential-file denial, workspace-only writes, loopback denial, configured
+   resource ceilings, fail-closed sandbox setup, and private DNS rejection
+   through the real HTTP transport for IPv4 and IPv6. Continue checking the
+   remaining gaps below before changing policy or adding features.
+2. **Close release-blocking boundary gaps.** Make DNS-plus-connect deadlines
+   enforceable, verify sandbox denial/resource limits, and retain fail-closed
+   behavior when a boundary is unavailable.
+3. **Exercise real user flows.** Add offline mocked CLI/runtime tests covering
+   provider selection, approvals, tool calls and errors, persistence/resume,
+   code-task outcomes, and cleanup.
+4. **Harden stateful features.** Complete code-task source preservation,
+   memory retention/search/deletion, RAG recovery, provider redaction, and MCP
+   lifecycle behavior with focused failure-path tests.
+5. **Add safe workspace operations.** Implement bounded search, patch
+   preview/apply, workspace diff, read-only Git inspection, and approved
+   recoverable destructive operations; keep execution isolated and bounded.
+6. **Verify release operations.** Run the committed CI matrix on declared
+   Python versions, address failures, and document supported platforms,
+   backups/upgrades, and recovery.
+7. **Defer optional work.** Add integrations, benchmarks, hardware backends,
+   or additional media input only after the security, consent, and support
+   boundaries are designed and tested.
+
+Each stage should preserve user-data locations and public CLI behavior. Do not
+mark a stage complete based on helper tests alone: meet that stage's acceptance
+criteria through the actual runtime boundary.
 
 ## P0 — Release blockers
 
 ### Extend and validate execution isolation
 
-- The current Linux backend uses Bubblewrap namespaces, a dedicated writable
-  project mount, restricted read-only runtime mounts, disabled networking,
-  dropped capabilities, and `prlimit` resource ceilings. It fails closed when
-  Linux, `bwrap`, or `prlimit` is unavailable. Generated-project commands and
-  configured stdio MCP processes use this boundary, with separate temporary
-  workspaces for MCP. It is not a container boundary.
 - Expand platform support only with equivalently enforced filesystem,
   identity, network, and resource restrictions; do not silently fall back to
   host execution.
 
 **Acceptance:** add tests proving credential-path denial, process/resource
-limits, sandbox failure modes, and actual isolation behavior in CI. The current
-test proves only workspace writes and denial of one host-file and loopback
-access. Add equivalent backends only after validating them on supported OSes.
+limits, sandbox failure modes, and actual isolation behavior in CI. Add
+equivalent backends only after validating them on supported OSes.
+
+**Verified baseline:** the Linux subprocess integration test now checks that
+workspace files remain writable while host files/credentials and host network
+listeners are inaccessible, that CPU/address-space/process/file-size limits
+are set, and that writes outside the mounted workspace do not reach the host.
+Unit tests also verify non-Linux and missing-tool setups fail closed. Other
+operating systems remain unsupported until an equivalent backend is validated.
 
 ### Enforce outbound network policy outside URL parsing
 
-- Web fetch/download and Online API HTTP clients now resolve and validate
-  addresses immediately before connecting, pin the selected address for that
-  connection, disable environment proxies, and validate each redirect. Online
-  provider mode permits a user-selected loopback or explicit private IP literal.
-- Request duration and concurrency are bounded for web fetch/download;
-  Online connection pools/timeouts are bounded separately. Download failures
-  preserve existing destinations.
-- DuckDuckGo search, configured Ollama endpoints, and remote MCP over HTTP now
-  use the pinned transport. Ollama/HTTP MCP permit explicitly selected
-  loopback/private literal endpoints; hostnames resolving privately remain
-  blocked. MCP WebSocket is restricted to IP literals because
-  that adapter transport offers no pinned HTTP client factory.
 - Synchronous OS DNS resolution cannot be forcibly interrupted by the Python
   request timeout; use an egress proxy/resolver with an enforceable deadline
   for a hard total DNS-plus-connect bound.
 
 **Acceptance:** expand tests for IPv4/IPv6, redirects, oversized and slow
-responses, and atomic destination preservation. Current unit tests cover
-address pinning, mixed public/private DNS, redirect rejection, timeout, and
-failure preservation; exercise these against the actual transport in CI.
+responses, and atomic destination preservation; exercise these against the
+actual transport in CI.
+
+**Verified baseline:** an actual HTTPX transport request is rejected before
+reaching a local listener when a hostname resolves to private IPv4 or IPv6.
+Redirect, response-size, timeout, and failed-download preservation cases have
+focused tests; stronger actual-transport coverage and the hard DNS deadline
+remain outstanding.
 
 ### Test the real agent lifecycle
 
 - Add deterministic end-to-end tests for startup, local and Online selection,
   one normal turn, tool call and tool result, tool error recovery, persistence,
   session resume, shutdown, and code-task completion/blocking.
-- The suite now exercises a mocked local CLI turn, resume, persistence,
-  shutdown, tool result/error handling, and Online model listing/auth redaction.
-  These are not yet a complete HTTP-boundary server or a full Online CLI turn.
 - Mock Ollama and an OpenAI-compatible server at the HTTP boundary, including
   auth failures, timeouts, malformed responses, tool-call payloads, and
   privacy-sensitive request bodies.
 - Test approval and denial flows through the same runtime path used by CLI
   tool calls. Confirm no external call occurs after denial or while offline.
-- Cover IPv6 addresses and sensitive argument redaction for every tool origin;
-  current MCP prompt/log redaction is tested, but full tool-audit behavior is
-  not yet established.
-- The generated Python runner clears pytest's cache and bytecode; detected
-  Python, npm, Go, and Cargo suites run in the OS sandbox. Tests now cover
-  missing Python runners, timeouts, ignored test files, and multiple runners.
-  Expand final-checkpoint and failure-flow coverage.
+- Cover IPv6 addresses, sensitive argument redaction for every tool origin,
+  and code-task final-checkpoint and failure-flow behavior.
 
 **Acceptance:** all lifecycle tests run without a live Ollama service or
 external network; the tests prove request contents, persisted state, and
@@ -100,9 +96,6 @@ side-effect boundaries rather than only testing helper functions.
 
 ### Complete resource-lifecycle coverage
 
-- SQLite and tracked HTTP clients are closed in the agent's `finally`-owned
-  runtime lifecycle, and dynamically registered MCP tools are restored. The
-  inspected MCP adapter opens a new session per tool call.
 - Verify cleanup under keyboard interrupt, startup failures, unexpected
   exceptions, and MCP server process failures; add coverage for repeated CLI
   invocations in one process.
@@ -113,10 +106,6 @@ prevent other configured servers from shutting down cleanly.
 
 ### Make code-task setup and verification explicit
 
-- The CLI asks for an existing source path or explicit new-project choice.
-  Test commands are discovered from Python tests and package/go/cargo project
-  metadata; detected applicable suites all run, and failures/missing runners
-  are reported instead of silently skipped.
 - Add explicit metadata-driven test commands, configured source paths for
   unattended use, and coverage for ignored/untracked file preservation.
 - Report copy exclusions and checkpoint results, preserve ignored/untracked
@@ -127,12 +116,35 @@ prevent other configured servers from shutting down cleanly.
 source preservation, ambiguous/headless selection, excluded secrets,
 ignored files, multiple test commands, failed tests, and final status.
 
+### Add focused, safer project-inspection and editing tools
+
+- Add dedicated workspace-bounded file-pattern search, text search, and (where
+  practical) symbol search so routine exploration does not require shell
+  execution.
+- Add a patch preview/apply flow and a workspace diff tool. Preview exact
+  changes before applying them; preserve the existing path validation and
+  snapshot-backup behavior for modifications.
+- Add explicit file rename and delete operations only with path validation,
+  collision checks, backups or recoverability where applicable, and
+  confirmation before destructive changes.
+- Add read-only Git status, diff, log, and branch inspection for ordinary
+  workspace sessions. Keep code-task checkpoint/finalize operations scoped to
+  the active isolated task and retain their test gates.
+- Consider a bounded, allowlisted way to run a selected test, lint, or build
+  check. Do not expose an unbounded host command path or weaken the existing
+  Bubblewrap isolation and approval rules.
+
+**Acceptance:** tests prove search and all file operations stay inside the
+workspace (including symlink and traversal cases); patch previews match the
+applied diff; destructive operations honor approval and preserve recoverable
+state; Git inspection is read-only; and verification tools enforce time,
+output, and sandbox limits.
+
 ### Bound memory by useful context and provide retention controls
 
-- Configurable token budgeting now bounds local history and retrieved/episodic
-  context, prioritizes recent messages and the current user request, and keeps
-  retrieved sources visible as citations. Retention days prune messages and
-  summaries together; clear-history deletes summaries with their session.
+- Add search across older conversation history and summaries, plus selective
+  session or memory-item deletion. Keep retrieval scoped to the local SQLite
+  store and make deletion targets reviewable before confirmation.
 - Make the token budget model-aware where metadata is available, bound system
   prompt/output tokens, and test retention/deletion behavior end-to-end.
 - Keep memory summaries bounded, session-scoped, and isolated between users
@@ -140,28 +152,23 @@ ignored files, multiple test commands, failed tests, and final status.
 
 **Acceptance:** long-session tests stay within the configured context budget;
 recent instructions and citations remain available; retention and deletion
-remove exactly the documented records.
+remove exactly the documented records; memory search returns bounded,
+session-aware results and selective deletion cannot affect unrelated sessions.
 
 ### Make RAG indexing recoverable and bounded
 
-- Configurable file, corpus, PDF-page, and chunk limits are enforced. Index
-  state writes are atomic and occur after vector operations; damaged state
-  fails closed. The CLI now asks before preserving the old index as a
-  timestamped backup and rebuilding.
-- Remaining work: test recovery if the Chroma database itself is corrupt,
-  fully transactional partial vector updates, deletion/modified-source edge
-  cases, and citations through the live CLI.
+- Test recovery if the Chroma database itself is corrupt, fully transactional
+  partial vector updates, deletion/modified-source edge cases, and citations
+  through the live CLI.
 
 **Acceptance:** tests cover size limits, corrupted state, partial vector-store
 failures, recovery/rebuild, deleted and modified files, and source citations.
 
 ### Complete provider and capability verification
 
-- Online model listing and auth failure redaction have mocks; API clients now
-  use the pinned outbound transport. Add mock-server coverage for
-  rate-limits, retries, timeouts, tool calls, malformed responses, and
-  redaction. Verify raw API keys never appear in logs, config, SQLite, or
-  failure output.
+- Add mock-server coverage for rate-limits, retries, timeouts, tool calls,
+  malformed responses, and redaction. Verify raw API keys never appear in
+  logs, config, SQLite, or failure output.
 - Test model fallback only for recognized availability/capability failures;
   preserve privacy mode, permissions, task context, and hardware policy.
 - Keep vision/audio inputs explicitly unsupported until implemented. Reject
@@ -176,12 +183,6 @@ an actionable error without leaking input.
 
 ### Manage MCP permissions and lifecycle consistently
 
-- A tool catalog now reports origin, approval policy, and known/network-capable
-  effects; configured MCP transport fields and timeout ranges are validated.
-- Stdio MCP children now run in Bubblewrap with no network, an isolated
-  temporary writable workspace, read-only runtime mounts, and resource limits.
-  Remote SSE/streamable-HTTP uses the pinned async HTTP transport. WebSocket
-  cannot pin hostnames and is limited to IP literals.
 - Continue enforcing a consistent invocation policy with bounded execution,
   safe output handling, and auditable approvals. Verify each transport,
   isolation, and shutdown path through integration tests.
@@ -190,22 +191,38 @@ an actionable error without leaking input.
 configuration, schema conflicts, invocation approval, timeout, server
 failure, and clean shutdown.
 
+### Add and document optional service integrations
+
+- Add optional integrations such as GitHub or databases as user-configured MCP
+  servers or narrowly scoped adapters; document that each integration is
+  available only after it has been configured and loaded.
+- Defer browser automation and computer-control tools until there is a concrete
+  need and a design for domain restrictions, credential isolation, per-action
+  approval, and bounded execution. Prefer explicit user consent and visible
+  actions over unattended browsing or control.
+
+**Acceptance:** each shipped integration has documented setup, required
+permissions, data sent outside the machine, failure behavior, and integration
+tests; browser/computer-control features remain disabled until their security
+boundary and consent UX are verified.
+
 ### Establish repeatable release engineering
 
-- Run the new GitHub Actions workflow on the actual supported Python versions
-  and fix incompatibilities; add supported operating systems only after the
-  dependencies and runtime are verified there.
-- A focused Ruff correctness check now runs in CI. Add formatting, broader
-  lint/type-check jobs; establish dependency update and vulnerability
-  monitoring.
-- Wheel/sdist builds and CLI help have passed locally. Add clean-environment
-  installation smoke tests and verify packaged resources/default config.
-- Document upgrade, backup/restore, supported deployment platforms, logging,
-  and recovery from corrupt databases or vector indexes.
+- Run the existing GitHub Actions workflow on the declared Python versions
+  (3.10 and 3.14), inspect failures, and fix compatibility issues. Treat Linux
+  as the only supported OS until equivalent runtime/isolation behavior is
+  verified elsewhere.
+- Extend automated release checks only for gaps that remain: consider
+  formatting/type checks and dependency/vulnerability monitoring after the
+  blocking correctness work is covered.
+- Document supported platforms, upgrade and backup/restore procedures,
+  logging controls, and recovery from corrupt SQLite databases or vector
+  indexes.
 
 **Acceptance:** clean artifact installation and CI pass on every declared
-platform/Python combination without network-dependent unit tests or a local
-Ollama daemon.
+Python/platform combination; supported platforms and operational recovery
+procedures are documented; CI tests do not require a local Ollama daemon or
+live Internet services.
 
 ## P3 — Optional improvements
 
@@ -218,11 +235,6 @@ Ollama daemon.
   maintained backend can select and verify it safely. Ollama's current status
   reporting indicates VRAM allocation but does not identify the active vendor
   backend.
-- Optional webcam capture and microphone recording/transcription are available
-  to local sessions with per-use approval, bounded capture duration/image count,
-  and optional dependencies. Webcam frames are sent only to a vision-capable
-  local model; microphone audio is transcribed locally with a configured
-  on-disk Whisper model. Online providers do not receive media tools.
 - Remaining multimodal work:
   1. Add explicit user image-file selection, format/size validation, and the
      same local vision capability/privacy checks used for webcam frames.

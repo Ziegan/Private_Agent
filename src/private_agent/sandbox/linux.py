@@ -1,3 +1,5 @@
+"""Workspace path controls and Linux command risk helpers."""
+
 import os
 import pathlib
 import shutil
