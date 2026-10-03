@@ -5,6 +5,8 @@ import shlex
 import sqlite3
 import threading
 import pathlib
+import contextvars
+from contextlib import contextmanager
 from typing import Optional, Callable
 from functools import wraps
 import asyncio
@@ -14,17 +16,18 @@ import urllib.parse
 import shutil
 import httpx
 import httpcore
+from datetime import datetime
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from rich.console import Console
 
-from .sandbox import SandboxManager, create_hitl_snapshot, evaluate_shell_command
+from ..sandbox import SandboxManager, create_hitl_snapshot, evaluate_shell_command
 from .media_tools import (
     capture_webcam_image,
     list_microphone_devices,
     record_microphone_audio,
 )
-from .config import (
+from ..config import (
     DEFAULT_DB_PATH,
     INTERNET_CHECK_HOST,
     INTERNET_CHECK_PORT,
@@ -40,6 +43,19 @@ console = Console()
 # Global reference for active sqlite db path used by sqlite tools
 ACTIVE_DB_PATH = DEFAULT_DB_PATH
 _sqlite_lock = threading.Lock()
+_tool_invocation_approved = contextvars.ContextVar(
+    "private_agent_tool_invocation_approved", default=False
+)
+
+
+@contextmanager
+def approved_tool_invocation():
+    """Mark the current model tool call as approved by the session policy."""
+    token = _tool_invocation_approved.set(True)
+    try:
+        yield
+    finally:
+        _tool_invocation_approved.reset(token)
 
 def set_active_db_path(path: str):
     global ACTIVE_DB_PATH
@@ -107,6 +123,8 @@ def describe_tool_catalog() -> list[dict[str, str]]:
                 if name == "list_microphone_devices"
                 else "explicit per-use local capture approval"
             )
+        elif name == "get_local_datetime":
+            permission = "no approval required; reads local system clock"
         elif name in {"run_shell_command", "delete_chat_history_from_sqlite"}:
             permission = "interactive approval for shell/deletion/network actions"
         else:
@@ -597,6 +615,19 @@ class CreateSkillInput(BaseModel):
     )
 
 # --- TOOL IMPLEMENTATIONS ---
+@tool
+def get_local_datetime() -> str:
+    """Get the current local date, time, weekday, month, and year from this machine."""
+    now = datetime.now().astimezone()
+    return (
+        f"Local date: {now:%A, }{now.day} {now:%B %Y}\n"
+        f"Local time: {now:%H:%M:%S %Z} (UTC{now:%z})\n"
+        f"Weekday: {now:%A}\n"
+        f"Month: {now:%B}\n"
+        f"Year: {now:%Y}"
+    )
+
+
 @tool(args_schema=ReadFileInput)
 def read_local_file(file_path: str) -> str:
     """Read and return content from a file inside the sandboxed workspace directory with stream-based chunking and size validation to protect memory overhead."""
@@ -653,7 +684,7 @@ def run_shell_command(command: str) -> str:
         command_args = shlex.split(command)
         if not command_args:
             return "Error: Command must not be empty."
-        if not sys.stdin.isatty():
+        if not sys.stdin.isatty() and not _tool_invocation_approved.get():
             return (
                 "Error: Shell execution requires an interactive terminal and explicit "
                 "per-command approval; no command was run."
@@ -667,18 +698,19 @@ def run_shell_command(command: str) -> str:
             "[yellow]Commands run in a Linux OS sandbox with network disabled, "
             f"workspace-only writes, and resource limits.{risk_notice}[/yellow]"
         )
-        approval = console.input(
-            f"[yellow]Approve command {' '.join(shlex.quote(arg) for arg in command_args)}? [y/N]: [/yellow]"
-        ).strip().lower()
-        if approval != "y":
-            return "Error: Command execution was not approved; no command was run."
-        from .code_tasks import ACTIVE_CODE_TASK
+        if not _tool_invocation_approved.get():
+            approval = console.input(
+                f"[yellow]Approve command {' '.join(shlex.quote(arg) for arg in command_args)}? [y/N]: [/yellow]"
+            ).strip().lower()
+            if approval != "y":
+                return "Error: Command execution was not approved; no command was run."
+        from ..code_tasks import ACTIVE_CODE_TASK
         if ACTIVE_CODE_TASK is not None and command_args[0] == "git":
             return (
                 "Error: Use checkpoint_code_task for local code-task checkpoints; "
                 "manual Git commands are disabled."
             )
-        from .code_tasks import _isolated_command
+        from ..code_tasks import _isolated_command
         workspace_root = (
             ACTIVE_CODE_TASK.root
             if ACTIVE_CODE_TASK is not None
@@ -929,7 +961,7 @@ def delete_chat_history_from_sqlite(session_id: Optional[str] = None) -> str:
 @tool(args_schema=CreateSkillInput)
 def create_skill(name: str, description: str, instructions: str) -> str:
     """Create a reusable Markdown skill in the configured skills folder after user approval."""
-    from .skills import AgentSkill, create_skill_file
+    from ..skills import AgentSkill, create_skill_file
 
     try:
         if _ACTIVE_SKILL_DIRECTORY is None:
@@ -956,6 +988,7 @@ def create_skill(name: str, description: str, instructions: str) -> str:
 
 
 AVAILABLE_TOOLS = {
+    "get_local_datetime": get_local_datetime,
     "read_local_file": read_local_file,
     "edit_local_file": edit_local_file,
     "run_shell_command": run_shell_command,
@@ -1055,7 +1088,7 @@ async def load_configured_mcp_tools(server_name: str, server_config: dict) -> li
     if transport in {"sse", "streamable_http"}:
         normalized_config["httpx_client_factory"] = _mcp_http_client_factory
     elif transport == "stdio":
-        from .code_tasks import _isolated_command
+        from ..code_tasks import _isolated_command
 
         sandbox_dir = tempfile.mkdtemp(prefix="private-agent-mcp-")
         _mcp_sandbox_dirs.append(sandbox_dir)

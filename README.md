@@ -6,16 +6,36 @@ retrieval, Markdown skills, built-in tools, and explicitly configured MCP
 servers. Multi-step work can use an iterative tool loop with configurable
 limits.
 
+## Source layout
+
+Feature code is grouped into importable packages under `src/`: `tools/`
+(including `media_tools.py`), `rag/`, `skills/`, `sandbox/`, `database/`,
+`hardware/`, and `code_tasks/`. `agent.py` coordinates these packages and
+`config.py` provides shared configuration. Existing imports such as
+`from src.rag import initialize_knowledge_base` remain supported.
+
 ## Privacy and execution boundaries
 
 - Chat and embedding requests use the configured Ollama endpoint. Keep
   `ollama_base_url` pointed at a trusted local service for local-only
   inference.
 - Web research is enabled by default but asks for approval before sending a
-  query. The agent checks connectivity before making a request. If offline, it
-  offers a retry or allows the user to continue with clearly incomplete
-  offline information. Set `enable_web_research` to `false` to disable it, or
-  set `web_research_consent` to `never`.
+  query in Manual mode. The agent checks connectivity before making a request.
+  If offline, it offers a retry or allows the user to continue with clearly
+  incomplete offline information. Set `enable_web_research` to `false` to
+  disable it, or set `web_research_consent` to `never` to block all network
+  research regardless of permission mode.
+- At startup, choose a tool-permission mode: **Manual** asks before every tool
+  action, **Auto** allows reads/searches and asks before changes, commands, and
+  MCP tools not on the allowlist, and **Full** permits model-requested tool
+  actions for that session. `agent_permission_mode` sets the default
+  (`manual`, `auto`, or `full`). Full mode does not bypass disabled network
+  research, the `never` network policy, or explicit confirmation for deleting
+  SQLite chat history.
+- At startup, an optional local-data reset menu can clear the configured
+  Chroma index, SQLite conversation messages and summaries, or both. Reset
+  requires typing `RESET`; a declined or invalid confirmation leaves the data
+  untouched.
 - Model selection offers an explicit **Online (OpenAI-compatible API)** mode.
   Remote endpoints receive no conversation history or RAG context unless you
   opt in for that session. Local/MCP tools are disabled for the remote model
@@ -31,23 +51,26 @@ limits.
   connections and may target public hosts or explicitly selected local/private
   IP addresses. WebSocket MCP is restricted to explicit IP addresses because
   its transport cannot pin hostname resolution. MCP tool
-  calls require interactive approval unless their tool names are explicitly
-  listed in `mcp_auto_approve_tools`.
+  calls require approval in Manual mode; Auto mode asks unless their tool names
+  are explicitly listed in `mcp_auto_approve_tools`. Full mode permits
+  model-requested MCP calls for that session.
 - The `create_skill` tool is available when the user explicitly requests a
   reusable skill. The agent drafts Markdown instructions from that request
-  and relevant context, then asks for approval before writing only a new
-  `.md` file in the configured skills directory; existing skills are never
-  overwritten. Approved skills are available immediately and on later runs.
+  and relevant context, then applies the active permission mode before writing
+  only a new `.md` file in the configured skills directory; existing skills
+  are never overwritten. Approved skills are available immediately and on
+  later runs.
 - Optional local media tools can capture a single webcam frame for a local
   vision-capable Ollama model and record up to 30 seconds from a microphone for
-  transcription by a locally installed Whisper model. Every capture prompts
-  for per-use approval; camera frames remain in memory and are not saved, and
+  transcription by a locally installed Whisper model. Manual and Auto modes
+  prompt before captures; Full mode permits them for the session. Camera frames
+  remain in memory and are not saved, and
   microphone audio is not sent to a remote service. Media tools are disabled
   for Online providers. A transcript is ordinary conversation content and may
   appear in the model's reply and saved conversation history. Video-file input
   and direct audio-file/model input are not implemented.
 - File tools validate paths against the workspace root. Shell commands require
-  interactive approval, then run without shell interpretation in a Bubblewrap
+  approval in Manual and Auto modes, then run without shell interpretation in a Bubblewrap
   Linux sandbox with network access disabled, workspace-only writes, dropped
   capabilities, and CPU, memory, process, and file-size limits. Generated
   project tests use the same sandbox. Execution fails closed if Linux,
@@ -88,11 +111,24 @@ limits.
    python main.py
    ```
 
-The first run creates `.private_agent.conf`. `resources/skills` is the default
+The first run creates `~/.private_agent.conf` in the current user's home
+directory, regardless of the installation method or launch directory. The same
+per-user file is used by both `python main.py` and the installed `private-agent`
+command. `resources/skills` is the default
 Markdown skill directory. Configure `rag_docs_path` to enable local document
 indexing; leave it `null` to skip RAG. Conversation history is stored in
 `~/.local_ai_memory.db`, and the Chroma index is stored in
 `./.local_ai_chroma_db`.
+
+Set `"DEBUG_LOG_ENABLED": 1` in `~/.private_agent.conf` to write a trace file for
+each run under `~/.private_agent/logs/`; set it to `0` to disable logging (the
+default). Trace files and their directory are created with owner-only
+permissions. A trace includes rendered agent output and interactive prompt
+responses and phase timings for startup, MCP loading, RAG indexing/search, and
+model calls, which can contain private conversation or tool data; enable it
+only when needed and review/delete the resulting files securely. Model text
+responses are streamed to the terminal when supported; models without a
+streaming API retain the complete-response behavior.
 
 ### Optional pip installation
 
@@ -172,7 +208,7 @@ information after loading a model.
 
 ## Configuration
 
-Example `.private_agent.conf`:
+Example `~/.private_agent.conf`:
 
 ```json
 {
@@ -212,9 +248,9 @@ Example `.private_agent.conf`:
 }
 ```
 
-The same runtime dependencies are listed in `requirements.txt`; install test
-dependencies with `requirements-dev.txt` if not installing the editable
-development extra. `python -m pytest -q` runs the test suite.
+The same runtime dependencies are listed in `requirements.txt`. Install test
+and lint dependencies with `python -m pip install -e ".[dev]"`.
+`python -m pytest -q` runs the test suite.
 
 The default embedding model in the generated configuration may differ from
 this example; set it to a model actually installed in your Ollama instance.

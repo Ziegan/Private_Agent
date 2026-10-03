@@ -1,1 +1,16 @@
 improvements/
+src/__pycache__/
+tests/__pycache__/
+.private_agent.conf
+__pycache__/
+.pytest_cache/
+.local_ai_chroma_db/
+.venv/
+.ruff_cache/
+private_agent.egg-info/
+.github/workflows/
+src/skills/__pycache__/
+src/code_tasks/__pycache__/
+src/database/__pycache__/
+src/hardware/__pycache__/
+src/rag/__pycache__/

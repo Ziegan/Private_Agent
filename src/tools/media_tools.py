@@ -56,14 +56,6 @@ def list_microphone_devices() -> str:
             "Microphone capture is optional. Install media support with "
             "`python -m pip install '.[media]'`."
         )
-    global _image_capture_count
-    with _image_lock:
-        if _image_capture_count >= MAX_IMAGES_PER_TURN:
-            return (
-                f"Camera capture limit reached ({MAX_IMAGES_PER_TURN} frames per "
-                "user request); ask the user to start a new request."
-            )
-        _image_capture_count += 1
     try:
         devices = sd.query_devices()
         available = [
@@ -121,7 +113,7 @@ def approve_local_capture(tool_name: str, args: dict) -> bool:
     )
     answer = console.input(
         f"[yellow]Allow {tool_name.replace('_', ' ')} {details}? "
-        "Capture/transcription stays on this machine. [y/N]: [/yellow]"
+        r"Capture/transcription stays on this machine. \[y/N]: [/yellow]"
     )
     return answer.strip().lower() == "y"
 
@@ -137,6 +129,14 @@ def capture_webcam_image(device_index: int = 0) -> str:
             "Camera capture is optional. Install media support with "
             "`python -m pip install '.[media]'`."
         )
+    global _image_capture_count
+    with _image_lock:
+        if _image_capture_count >= MAX_IMAGES_PER_TURN:
+            return (
+                f"Camera capture limit reached ({MAX_IMAGES_PER_TURN} frames per "
+                "user request); ask the user to start a new request."
+            )
+        _image_capture_count += 1
     try:
         capture = cv2.VideoCapture(device_index)
         if not capture.isOpened():

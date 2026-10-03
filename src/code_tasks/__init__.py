@@ -86,6 +86,12 @@ def _isolated_command(command: Sequence[str], root: Path) -> tuple[list[str], di
     rewritten_command = []
     root_prefix = str(root)
     runtime_prefix = Path(sys.prefix).resolve()
+    interpreter_base = Path(sys.base_prefix).resolve()
+    interpreter_path = Path(sys.executable).resolve()
+    interpreter_in_base = (
+        interpreter_base != Path("/usr")
+        and interpreter_path.is_relative_to(interpreter_base)
+    )
     dependency_paths = []
     for path in sys.path:
         if not path:
@@ -94,6 +100,7 @@ def _isolated_command(command: Sequence[str], root: Path) -> tuple[list[str], di
         if (
             resolved_path.is_dir()
             and resolved_path.is_relative_to(Path.home())
+            and not resolved_path.is_relative_to(interpreter_base)
             and resolved_path not in dependency_paths
         ):
             dependency_paths.append(resolved_path)
@@ -102,7 +109,14 @@ def _isolated_command(command: Sequence[str], root: Path) -> tuple[list[str], di
         for index, path in enumerate(dependency_paths)
     }
     for argument in command:
-        if argument == root_prefix or argument.startswith(root_prefix + os.sep):
+        try:
+            is_active_interpreter = Path(argument).resolve() == interpreter_path
+        except (OSError, RuntimeError):
+            is_active_interpreter = False
+        if is_active_interpreter and interpreter_in_base:
+            relative_interpreter = interpreter_path.relative_to(interpreter_base)
+            argument = str(Path("/opt/private-agent-python") / relative_interpreter)
+        elif argument == root_prefix or argument.startswith(root_prefix + os.sep):
             argument = "/workspace" + argument[len(root_prefix):]
         elif (
             runtime_prefix != Path("/usr")
@@ -161,6 +175,11 @@ def _isolated_command(command: Sequence[str], root: Path) -> tuple[list[str], di
             "--dir", "/opt/private-agent-runtime",
             "--ro-bind", str(runtime_prefix), "/opt/private-agent-runtime",
         ])
+    if interpreter_in_base:
+        args.extend([
+            "--dir", "/opt/private-agent-python",
+            "--ro-bind", str(interpreter_base), "/opt/private-agent-python",
+        ])
     if dependency_mounts:
         args.extend(["--dir", "/opt/private-agent-dependencies"])
         for source, destination in dependency_mounts.items():
@@ -208,6 +227,8 @@ def _isolated_command(command: Sequence[str], root: Path) -> tuple[list[str], di
         environment["PYTHONPATH"] = os.pathsep.join(
             str(sandbox_path) for sandbox_path in dependency_mounts.values()
         )
+    if interpreter_in_base:
+        environment["PYTHONHOME"] = "/opt/private-agent-python"
     return args, environment
 
 

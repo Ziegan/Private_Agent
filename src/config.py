@@ -9,7 +9,7 @@ from .hardware import normalize_acceleration_mode
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-CONFIG_FILE_PATH = pathlib.Path(".private_agent.conf")
+CONFIG_FILE_PATH = pathlib.Path.home() / ".private_agent.conf"
 
 DEFAULT_CONFIG = {
     "default_db_path": "~/.local_ai_memory.db",
@@ -31,6 +31,7 @@ DEFAULT_CONFIG = {
     "rag_max_documents": 20000,
     "thinking_toggle_default": False,
     "thinking_effort_default": "medium",
+    "agent_permission_mode": "auto",
     "enable_web_research": True,
     "web_research_consent": "ask",
     "mcp_auto_approve_tools": [],
@@ -47,17 +48,26 @@ DEFAULT_CONFIG = {
     "max_summary_chars": 2000,
     "max_network_concurrency": 4,
     "network_request_timeout": 30,
+    "DEBUG_LOG_ENABLED": 0,
     "mcpServers": {}
 }
 
 def load_or_create_config() -> dict:
-    """Loads settings from .private_agent.conf or creates it with defaults if missing, handling empty, non-dict, directory, or malformed files gracefully."""
+    """Load the per-user config, creating it with defaults when missing."""
     if not CONFIG_FILE_PATH.exists():
         try:
-            CONFIG_FILE_PATH.write_text(json.dumps(DEFAULT_CONFIG, indent=4), encoding="utf-8")
+            descriptor = os.open(
+                CONFIG_FILE_PATH,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            with os.fdopen(descriptor, "w", encoding="utf-8") as config_file:
+                config_file.write(json.dumps(DEFAULT_CONFIG, indent=4))
+        except FileExistsError:
+            pass
         except Exception as e:
             warnings.warn(f"Failed to create default configuration file at {CONFIG_FILE_PATH}: {e}", RuntimeWarning)
-        return DEFAULT_CONFIG.copy()
+            return DEFAULT_CONFIG.copy()
     
     try:
         if CONFIG_FILE_PATH.is_dir():
@@ -167,6 +177,16 @@ else:
 THINKING_EFFORT_DEFAULT = str(APP_CONFIG.get("thinking_effort_default", "medium")).lower()
 if THINKING_EFFORT_DEFAULT not in {"low", "medium", "high"}:
     THINKING_EFFORT_DEFAULT = "medium"
+
+AGENT_PERMISSION_MODE = str(APP_CONFIG.get("agent_permission_mode", "auto")).lower()
+if AGENT_PERMISSION_MODE not in {"manual", "auto", "full"}:
+    AGENT_PERMISSION_MODE = "auto"
+
+_debug_log_enabled = APP_CONFIG.get("DEBUG_LOG_ENABLED", 0)
+if isinstance(_debug_log_enabled, str):
+    DEBUG_LOG_ENABLED = _debug_log_enabled.strip() == "1"
+else:
+    DEBUG_LOG_ENABLED = _debug_log_enabled == 1 or _debug_log_enabled is True
 
 _raw_mcp = APP_CONFIG.get("mcpServers", {})
 MCP_SERVERS = _raw_mcp if isinstance(_raw_mcp, dict) else {}

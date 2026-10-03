@@ -1,8 +1,12 @@
 import sys
 import time
 import asyncio
+import inspect
 import uuid
 import re
+import sqlite3
+from datetime import datetime
+from functools import lru_cache
 from getpass import getpass
 from typing import Any, Dict, List, Optional, Sequence
 from urllib.parse import urlsplit, urlunsplit
@@ -10,7 +14,13 @@ from rich.console import Console
 from rich.panel import Panel
 
 import ollama
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    ToolMessage,
+    SystemMessage,
+)
 from langchain_ollama import ChatOllama
 
 from .config import (
@@ -33,6 +43,7 @@ from .config import (
     MAX_HISTORY_MESSAGES,
     MAX_CONTEXT_TOKENS,
     CONVERSATION_RETENTION_DAYS,
+    AGENT_PERMISSION_MODE,
     ENABLE_WEB_RESEARCH,
     WEB_RESEARCH_CONSENT,
     THINKING_TOGGLE_DEFAULT,
@@ -62,8 +73,9 @@ from .tools import (
     load_configured_mcp_tools,
     set_active_db_path,
     set_active_skill_runtime,
+    approved_tool_invocation,
 )
-from .rag import initialize_knowledge_base
+from .rag import initialize_knowledge_base, reset_knowledge_base
 from .skills import load_skills_from_folder, match_skill_by_relevancy
 from .code_tasks import (
     CodeTaskWorkspace,
@@ -78,7 +90,8 @@ from .hardware import (
     inspect_ollama_hardware,
     ollama_acceleration_options,
 )
-from .media_tools import (
+from .run_logging import RUN_LOGGER
+from .tools.media_tools import (
     approve_local_capture,
     captured_image_message,
     clear_captured_images,
@@ -86,6 +99,18 @@ from .media_tools import (
 
 console = Console()
 _ACTIVE_MEMORY: Optional[PersistentMemory] = None
+_MODEL_CAPABILITIES_CACHE: Dict[tuple[str, str], Dict[str, Optional[bool]]] = {}
+
+
+def _current_datetime_context() -> str:
+    now = datetime.now().astimezone()
+    return (
+        "Current local date and time from the system clock: "
+        f"{now:%A, %B} {now.day}, {now.year}; "
+        f"{now:%H:%M:%S %Z} (UTC{now:%z}). "
+        "Use this as the authoritative current date/time when answering; "
+        "do not infer it from model knowledge or conversation history."
+    )
 
 
 def _close_ollama_client(client):
@@ -117,6 +142,11 @@ def _response_field(response: Any, key: str, default: Any = None) -> Any:
 
 def inspect_model_capabilities(model_name: str) -> Dict[str, Optional[bool]]:
     """Read Ollama's declared model capabilities without guessing from its name."""
+    cache_key = (OLLAMA_BASE_URL, model_name)
+    cached = _MODEL_CAPABILITIES_CACHE.get(cache_key)
+    if cached is not None:
+        return cached.copy()
+
     result: Dict[str, Optional[bool]] = {
         "tools": None,
         "function_calls": None,
@@ -143,6 +173,9 @@ def inspect_model_capabilities(model_name: str) -> Dict[str, Optional[bool]]:
         model_info = _response_field(details, "modelinfo", {}) or {}
         raw_capabilities = model_info.get("capabilities", []) if isinstance(model_info, dict) else []
     if not raw_capabilities:
+        if len(_MODEL_CAPABILITIES_CACHE) >= 128:
+            _MODEL_CAPABILITIES_CACHE.clear()
+        _MODEL_CAPABILITIES_CACHE[cache_key] = result.copy()
         return result
 
     names = {
@@ -158,6 +191,9 @@ def inspect_model_capabilities(model_name: str) -> Dict[str, Optional[bool]]:
         vision="vision" in names,
         audio="audio" in names,
     )
+    if len(_MODEL_CAPABILITIES_CACHE) >= 128:
+        _MODEL_CAPABILITIES_CACHE.clear()
+    _MODEL_CAPABILITIES_CACHE[cache_key] = result.copy()
     return result
 
 
@@ -182,7 +218,7 @@ def get_robust_chat_model(
             options.update(ollama_langchain_client_kwargs())
             options.update(ollama_acceleration_options(HARDWARE_ACCELERATION_MODE))
             if thinking is not None:
-                options["think"] = thinking
+                options["reasoning"] = thinking
             model = ChatOllama(**options)
             track_ollama_http_clients(model)
             return model.bind_tools(list(tools)) if tools is not None else model
@@ -226,7 +262,7 @@ def _make_chat_model(
     options.update(ollama_langchain_client_kwargs())
     options.update(ollama_acceleration_options(HARDWARE_ACCELERATION_MODE))
     if supports_thinking:
-        options["think"] = thinking_effort if thinking_enabled else False
+        options["reasoning"] = thinking_effort if thinking_enabled else False
     model = ChatOllama(**options)
     track_ollama_http_clients(model)
     return model
@@ -405,16 +441,139 @@ def select_online_model():
     }
 
 
-async def _invoke_with_budget(model: Any, messages: list, deadline: float):
+def _supports_async_streaming(model: Any) -> bool:
+    stream_method = getattr(model, "astream", None)
+    return callable(stream_method) and inspect.isasyncgenfunction(stream_method)
+
+
+async def _invoke_with_budget(
+    model: Any,
+    messages: list,
+    deadline: float,
+    *,
+    model_name: str = "model",
+):
+    """Invoke a model within the task deadline, streaming text when supported."""
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("Agent task time budget exhausted before model invocation.")
-    return await asyncio.wait_for(model.ainvoke(messages), timeout=remaining)
+    started = time.monotonic()
+    stream_method = getattr(model, "astream", None)
+    if _supports_async_streaming(model):
+        async def collect_stream():
+            aggregate = None
+            first_token_at = None
+            emitted_header = False
+            try:
+                async for chunk in stream_method(messages):
+                    aggregate = chunk if aggregate is None else aggregate + chunk
+                    text = _visible_chunk_text(getattr(chunk, "content", ""))
+                    if text:
+                        if first_token_at is None:
+                            first_token_at = time.monotonic()
+                        if not emitted_header:
+                            console.print(
+                                f"\n[bold green]AI ({model_name}):[/bold green] ",
+                                end="",
+                            )
+                            emitted_header = True
+                        console.print(
+                            text,
+                            end="",
+                            markup=False,
+                            highlight=False,
+                            soft_wrap=True,
+                        )
+            finally:
+                if emitted_header:
+                    console.print()
+            return aggregate, first_token_at
+
+        try:
+            aggregate, first_token_at = await asyncio.wait_for(
+                collect_stream(),
+                timeout=remaining,
+            )
+            RUN_LOGGER.info(
+                "TIMING phase=model-invoke mode=stream elapsed=%.3fs first_token_seconds=%s",
+                time.monotonic() - started,
+                f"{first_token_at - started:.3f}" if first_token_at else "n/a",
+            )
+            return aggregate if aggregate is not None else AIMessageChunk(content="")
+        except asyncio.TimeoutError:
+            RUN_LOGGER.info(
+                "TIMING phase=model-invoke mode=stream outcome=timeout elapsed=%.3fs",
+                time.monotonic() - started,
+            )
+            raise
+        except Exception:
+            RUN_LOGGER.info(
+                "TIMING phase=model-invoke mode=stream outcome=error elapsed=%.3fs",
+                time.monotonic() - started,
+            )
+            raise
+
+    try:
+        response = await asyncio.wait_for(model.ainvoke(messages), timeout=remaining)
+    except Exception:
+        RUN_LOGGER.info(
+            "TIMING phase=model-invoke mode=invoke outcome=error elapsed=%.3fs",
+            time.monotonic() - started,
+        )
+        raise
+    RUN_LOGGER.info(
+        "TIMING phase=model-invoke mode=invoke elapsed=%.3fs",
+        time.monotonic() - started,
+    )
+    return response
+
+
+async def _invoke_with_status(
+    model: Any,
+    messages: list,
+    deadline: float,
+    *,
+    model_name: str,
+    status_message: str,
+):
+    """Show a live status only for non-streaming invocations."""
+    if _supports_async_streaming(model):
+        return await _invoke_with_budget(
+            model,
+            messages,
+            deadline,
+            model_name=model_name,
+        )
+    with console.status(f"[bold cyan]{status_message}[/bold cyan]"):
+        return await _invoke_with_budget(
+            model,
+            messages,
+            deadline,
+            model_name=model_name,
+        )
+
+
+def _visible_chunk_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block if isinstance(block, str) else block.get("text", "")
+            for block in content
+            if isinstance(block, str)
+            or (
+                isinstance(block, dict)
+                and isinstance(block.get("text", ""), str)
+            )
+        )
+    return ""
 
 
 async def authorize_network_research(
     tool_name: str,
     tool_args: Dict[str, Any],
+    *,
+    permission_mode: str = "manual",
 ) -> tuple[bool, str]:
     """Require live connectivity and consent before an external request."""
     if not ENABLE_WEB_RESEARCH:
@@ -446,7 +605,7 @@ async def authorize_network_research(
 
     if WEB_RESEARCH_CONSENT == "never":
         return False, "Online research is disabled by the configured consent policy."
-    if WEB_RESEARCH_CONSENT == "ask":
+    if permission_mode == "manual":
         if not sys.stdin.isatty():
             return False, "Online search requires interactive user consent."
         request_summary = (
@@ -461,6 +620,88 @@ async def authorize_network_research(
         if choice != "y":
             return False, "Online research was not approved; use offline evidence only."
     return True, ""
+
+
+_MUTATING_TOOL_NAMES = frozenset({
+    "edit_local_file",
+    "run_shell_command",
+    "download_web_file",
+    "delete_chat_history_from_sqlite",
+    "create_skill",
+    "run_project_unit_tests",
+    "checkpoint_code_task",
+    "finalize_code_task",
+})
+
+
+def _tool_needs_permission(
+    name: str,
+    permission_mode: str,
+    *,
+    network_authorized: bool = False,
+) -> bool:
+    if permission_mode == "full":
+        return False
+    if permission_mode == "manual":
+        return name not in NETWORK_TOOL_NAMES or not network_authorized
+    return (
+        name in _MUTATING_TOOL_NAMES
+        or name in MCP_TOOL_NAMES and name not in MCP_AUTO_APPROVE_TOOLS
+    )
+
+
+def _select_permission_mode() -> str:
+    configured = AGENT_PERMISSION_MODE
+    labels = {
+        "manual": "Manual — ask before every tool action",
+        "auto": "Auto — read/search freely; ask before edits and command execution",
+        "full": "Full — approve all tool calls for this session",
+    }
+    if not sys.stdin.isatty():
+        return configured
+    console.print("[bold cyan][Agent Permission Mode][/bold cyan]")
+    for number, mode in enumerate(("manual", "auto", "full"), 1):
+        console.print(f"  {number}. {labels[mode]}")
+    selection = console.input(
+        f"Choose permission mode [1/2/3] (default: {configured}): "
+    ).strip().lower()
+    if not selection:
+        return configured
+    modes = {"1": "manual", "2": "auto", "3": "full"}
+    return modes.get(selection, configured)
+
+
+def _offer_local_data_reset(memory: PersistentMemory) -> None:
+    if not sys.stdin.isatty():
+        return
+    selection = console.input(
+        "[yellow]Local data reset: [1] Chroma knowledge index, "
+        "[2] SQLite conversation memory, [3] both (Enter to skip): [/yellow]"
+    ).strip().lower()
+    scopes = {"1": "chroma", "2": "sqlite", "3": "both"}
+    scope = scopes.get(selection)
+    if scope is None:
+        return
+    confirmation = console.input(
+        f"[red]This permanently resets {'ChromaDB' if scope == 'chroma' else 'SQLite memory' if scope == 'sqlite' else 'ChromaDB and SQLite memory'}. "
+        "Type RESET to confirm: [/red]"
+    ).strip()
+    if confirmation != "RESET":
+        console.print("[yellow]Local data reset cancelled; no data was changed.[/yellow]")
+        return
+    if scope in {"chroma", "both"}:
+        try:
+            reset_path = reset_knowledge_base(RAG_INDEX_PATH)
+            console.print(f"[green]Chroma index reset: {reset_path}[/green]")
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]Chroma reset failed: {exc}[/red]")
+            return
+    if scope in {"sqlite", "both"}:
+        try:
+            memory.clear_history()
+            console.print("[green]SQLite conversation memory and summaries reset.[/green]")
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
+            console.print(f"[red]SQLite reset failed ({type(exc).__name__}): {exc}[/red]")
 
 
 def fetch_local_chat_models() -> List[str]:
@@ -489,6 +730,16 @@ def fetch_local_chat_models() -> List[str]:
         if client is not None:
             _close_ollama_client(client)
 
+@lru_cache(maxsize=1)
+def _get_tokenizer():
+    try:
+        import tiktoken
+
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        return None
+
+
 def estimate_context_window(chat_history: list, current_input: str, max_context: int = 32768) -> dict:
     total_chars = len(current_input)
     for msg in chat_history:
@@ -496,11 +747,17 @@ def estimate_context_window(chat_history: list, current_input: str, max_context:
         content_str = "".join([str(c) for c in content]) if isinstance(content, list) else str(content)
         total_chars += len(content_str)
     
-    try:
-        import tiktoken
-        encoding = tiktoken.get_encoding("cl100k_base")
-        estimated_tokens = len(encoding.encode(current_input + "".join([str(m.content) for m in chat_history])))
-    except Exception:
+    encoding = _get_tokenizer()
+    if encoding is not None:
+        try:
+            estimated_tokens = len(
+                encoding.encode(
+                    current_input + "".join(str(msg.content) for msg in chat_history)
+                )
+            )
+        except Exception:
+            estimated_tokens = int(total_chars / 3.5)
+    else:
         estimated_tokens = int(total_chars / 3.5)
 
     percentage = min(100.0, (estimated_tokens / max_context) * 100)
@@ -513,13 +770,14 @@ def trim_history_to_context_budget(
     max_context_tokens: int = MAX_CONTEXT_TOKENS,
 ) -> list:
     """Retain the newest whole messages that fit alongside the current request."""
-    try:
-        import tiktoken
-        encoding = tiktoken.get_encoding("cl100k_base")
-
+    encoding = _get_tokenizer()
+    if encoding is not None:
         def count(text: str) -> int:
-            return len(encoding.encode(text))
-    except Exception:
+            try:
+                return len(encoding.encode(text))
+            except Exception:
+                return max(1, len(text) // 4)
+    else:
         def count(text: str) -> int:
             return max(1, len(text) // 4)
 
@@ -537,9 +795,11 @@ def trim_history_to_context_budget(
 
 
 def _token_count(text: str) -> int:
+    encoding = _get_tokenizer()
+    if encoding is None:
+        return max(1, len(text) // 4)
     try:
-        import tiktoken
-        return len(tiktoken.get_encoding("cl100k_base").encode(text))
+        return len(encoding.encode(text))
     except Exception:
         return max(1, len(text) // 4)
 
@@ -547,12 +807,12 @@ def _token_count(text: str) -> int:
 def _truncate_to_tokens(text: str, budget: int) -> str:
     if budget <= 0 or not text:
         return ""
-    try:
-        import tiktoken
-        encoding = tiktoken.get_encoding("cl100k_base")
-        return encoding.decode(encoding.encode(text)[:budget])
-    except Exception:
-        return text[: budget * 4]
+    encoding = _get_tokenizer()
+    if encoding is not None:
+        try:
+            return encoding.decode(encoding.encode(text)[:budget])
+        except Exception:
+            return text[: budget * 4]
 
 
 def _build_bounded_user_input(
@@ -613,6 +873,25 @@ def _redact_tool_arguments(value: Any) -> Any:
     return value
 
 
+def _webcam_capture_error(
+    tool_calls: list[dict],
+    tool_messages: list[ToolMessage],
+) -> Optional[str]:
+    """Return the webcam tool result when a call did not produce an image."""
+    messages_by_call_id = {
+        message.tool_call_id: str(message.content) for message in tool_messages
+    }
+    for call in tool_calls:
+        if call.get("name") != "capture_webcam_image":
+            continue
+        result = messages_by_call_id.get(call.get("id"), "")
+        if "Media capture was declined" in result:
+            continue
+        if not re.search(r"camera-image:[0-9a-f]{32}", result):
+            return result or "The webcam tool returned no result."
+    return None
+
+
 async def execute_tool_call(
     tool_call: dict,
     *,
@@ -620,6 +899,7 @@ async def execute_tool_call(
     local_media_allowed: bool = False,
     media_capture_authorized: bool = False,
     vision_supported: bool = False,
+    permission_mode: str = "auto",
     max_output_chars: int = MAX_TOOL_OUTPUT_CHARS,
 ) -> ToolMessage:
     name, args, call_id = tool_call.get("name"), tool_call.get("args", {}), tool_call.get("id")
@@ -644,8 +924,7 @@ async def execute_tool_call(
     ):
         result = "Error: Explicit media capture authorization was not provided."
     elif name in NETWORK_TOOL_NAMES and (
-        not ENABLE_WEB_RESEARCH
-        or WEB_RESEARCH_CONSENT == "never"
+        not ENABLE_WEB_RESEARCH or WEB_RESEARCH_CONSENT == "never"
         or not network_authorized
     ):
         result = "Error: Network tool call was not authorized; no request was made."
@@ -660,51 +939,42 @@ async def execute_tool_call(
             if approval != "delete":
                 result = "Error: Chat history deletion was declined; no data was removed."
             else:
-                result = await asyncio.to_thread(tool_func.invoke, args)
-    elif name == "create_skill":
-        if not sys.stdin.isatty():
-            result = "Error: Creating a skill requires interactive user approval."
-        else:
-            approval = console.input(
-                f"[yellow]Create this reusable skill in the configured skills "
-                f"folder?\nName: {args.get('name', '')}\n"
-                f"Description: {args.get('description', '')}\n"
-                f"Instructions:\n{args.get('instructions', '')}\n"
-                "Create skill? [y/N]: [/yellow]"
-            ).strip().lower()
-            if approval != "y":
-                result = "Error: Skill creation was declined; no file was written."
-            else:
-                try:
+                with approved_tool_invocation():
                     result = await asyncio.to_thread(tool_func.invoke, args)
-                except Exception as exc:
-                    result = f"Error creating skill: {type(exc).__name__}: {exc}"
-    elif name in MCP_TOOL_NAMES and name not in MCP_AUTO_APPROVE_TOOLS:
+    elif _tool_needs_permission(
+        name,
+        permission_mode,
+        network_authorized=network_authorized,
+    ) and not (
+        name in LOCAL_MEDIA_TOOL_NAMES and media_capture_authorized
+    ):
         if not sys.stdin.isatty():
-            result = "Error: MCP tool requires interactive approval and was not run."
+            result = "Error: This tool requires interactive approval and was not run."
         else:
             description = getattr(tool_func, "description", "") if tool_func else ""
             approval = console.input(
-                f"[yellow]Approve MCP tool '{name}'? {description}\n"
+                f"[yellow]Approve tool '{name}'? {description}\n"
                 f"Arguments: {safe_args}\nRun? [y/N]: [/yellow]"
             ).strip().lower()
             if approval != "y":
-                result = "Error: MCP tool invocation was declined; no action was taken."
+                result = "Error: Tool invocation was declined; no action was taken."
             else:
                 try:
-                    result = (
-                        await tool_func.ainvoke(args)
-                        if hasattr(tool_func, "ainvoke")
-                        else await asyncio.to_thread(tool_func.invoke, args)
-                    )
+                    with approved_tool_invocation():
+                        result = (
+                            await tool_func.ainvoke(args)
+                            if hasattr(tool_func, "ainvoke")
+                            else await asyncio.to_thread(tool_func.invoke, args)
+                        )
                 except Exception as exc:
-                    result = f"Error executing MCP tool {name}: {exc}"
+                    result = f"Error executing tool {name}: {exc}"
     elif tool_func:
         try:
-            if hasattr(tool_func, "ainvoke"):
-                result = await tool_func.ainvoke(args)
-            else:
-                result = await asyncio.to_thread(tool_func.invoke, args)
+            with approved_tool_invocation():
+                if hasattr(tool_func, "ainvoke"):
+                    result = await tool_func.ainvoke(args)
+                else:
+                    result = await asyncio.to_thread(tool_func.invoke, args)
         except Exception as e:
             result = f"Error executing tool {name}: {str(e)}"
     else:
@@ -717,10 +987,12 @@ async def execute_tool_call(
 
     if len(result_text) > max_output_chars:
         result_text = result_text[:max_output_chars] + "\n[Tool output truncated by configured limit.]"
+    RUN_LOGGER.info("TOOL RESULT %s\n%s", name, result_text)
     return ToolMessage(content=result_text, tool_call_id=call_id)
 
 async def _run_agent_cli_session():
     global _ACTIVE_MEMORY
+    startup_started = time.monotonic()
     if not sys.stdin.isatty():
         console.print(
             "[red]Private Agent requires an interactive terminal. "
@@ -750,6 +1022,7 @@ async def _run_agent_cli_session():
 
     memory = PersistentMemory(db_path=DEFAULT_DB_PATH)
     _ACTIVE_MEMORY = memory
+    _offer_local_data_reset(memory)
     if CONVERSATION_RETENTION_DAYS:
         pruned_count = memory.prune_history(CONVERSATION_RETENTION_DAYS)
         if pruned_count:
@@ -759,6 +1032,7 @@ async def _run_agent_cli_session():
             )
     set_active_db_path(DEFAULT_DB_PATH)
     for server_name, server_config in MCP_SERVERS.items():
+        mcp_started = time.monotonic()
         try:
             discovered_tools = await load_configured_mcp_tools(server_name, server_config)
             for mcp_tool in discovered_tools:
@@ -784,19 +1058,39 @@ async def _run_agent_cli_session():
             )
         except Exception as exc:
             console.print(f"[red][MCP error] {exc}[/red]")
+            RUN_LOGGER.info(
+                "TIMING phase=mcp-load server=%s outcome=error elapsed=%.3fs",
+                server_name,
+                time.monotonic() - mcp_started,
+            )
+        else:
+            RUN_LOGGER.info(
+                "TIMING phase=mcp-load server=%s tools=%d elapsed=%.3fs",
+                server_name,
+                len(discovered_tools),
+                time.monotonic() - mcp_started,
+            )
 
     _print_tool_catalog(describe_tool_catalog())
 
     docs_input = RAG_DOCS_DEFAULT if RAG_DOCS_DEFAULT else console.input("[yellow]Enter knowledge base (KB) files directory path (Press Enter to skip): [/yellow]").strip()
-    vectorstore = initialize_knowledge_base(
-        docs_input if docs_input else None,
-        index_path=RAG_INDEX_PATH,
-        confirm_rebuild=lambda detail: console.input(
-            f"[yellow]RAG index state is damaged: {detail}\n"
-            "Preserve the existing index as a timestamped backup and rebuild? "
-            "Type REBUILD to confirm: [/yellow]"
-        ).strip() == "REBUILD",
-    )
+    rag_init_started = time.monotonic()
+    try:
+        vectorstore = initialize_knowledge_base(
+            docs_input if docs_input else None,
+            index_path=RAG_INDEX_PATH,
+            confirm_rebuild=lambda detail: console.input(
+                f"[yellow]RAG index state is damaged: {detail}\n"
+                "Preserve the existing index as a timestamped backup and rebuild? "
+                "Type REBUILD to confirm: [/yellow]"
+            ).strip() == "REBUILD",
+        )
+    finally:
+        RUN_LOGGER.info(
+            "TIMING phase=rag-index elapsed=%.3fs enabled=%s",
+            time.monotonic() - rag_init_started,
+            bool(docs_input),
+        )
     is_rag_active = vectorstore is not None
 
     skills_folder_input = SKILLS_FOLDER_DEFAULT if SKILLS_FOLDER_DEFAULT else console.input("[cyan]Enter path to skills folder containing .md files (Press Enter for none): [/cyan]").strip()
@@ -823,6 +1117,12 @@ async def _run_agent_cli_session():
     if workspace_input:
         SandboxManager.set_root(workspace_input)
     console.print(f"[bold green][Security][/bold green] Workspace root locked to: {SandboxManager.root_dir}")
+    RUN_LOGGER.info(
+        "TIMING phase=agent-startup elapsed=%.3fs mcp_servers=%d rag_enabled=%s",
+        time.monotonic() - startup_started,
+        len(MCP_SERVERS),
+        is_rag_active,
+    )
 
     available_models = fetch_local_chat_models()
     if PREFERRED_MODEL in available_models:
@@ -839,6 +1139,10 @@ async def _run_agent_cli_session():
         session_id = f"session_{uuid.uuid4().hex}"
     thinking_enabled = THINKING_TOGGLE_DEFAULT
     thinking_effort = THINKING_EFFORT_DEFAULT
+    permission_mode = _select_permission_mode()
+    console.print(
+        f"[cyan][Agent Permission Mode][/cyan] {permission_mode.title()}"
+    )
 
     while True:
         console.print("\n[bold underline]Model Provider[/bold underline]")
@@ -1238,8 +1542,13 @@ async def _run_agent_cli_session():
                 episodic_context = "\n".join(past_summaries) if past_summaries else ""
 
                 if vectorstore and include_private_context and active_code_workspace is None:
+                    rag_search_started = time.monotonic()
                     try:
-                        relevant_docs = vectorstore.similarity_search(user_input, k=2)
+                        relevant_docs = await asyncio.to_thread(
+                            vectorstore.similarity_search,
+                            user_input,
+                            k=2,
+                        )
                         if relevant_docs:
                             retrieved_citations = format_retrieved_citations(
                                 relevant_docs
@@ -1253,6 +1562,11 @@ async def _run_agent_cli_session():
                             console.print(f"[cyan][RAG State][/cyan] Retrieved {len(relevant_docs)} document/episodic chunks.")
                     except Exception as exc:
                         console.print(f"[yellow][RAG State] Vector search failed: {exc}[/yellow]")
+                    finally:
+                        RUN_LOGGER.info(
+                            "TIMING phase=rag-search elapsed=%.3fs",
+                            time.monotonic() - rag_search_started,
+                        )
 
                 context_label = (
                     "[Local memory and knowledge context]"
@@ -1285,9 +1599,13 @@ Create or update a relevant unit-test file in this project. Before each subtask 
                 )
                 system_prompt = f"""You are Private Agent. {provider_privacy_instruction} Use only the capabilities actually supplied in this conversation.
 
+{_current_datetime_context()}
+
 {code_task_instructions}
 
-For multi-step tasks, provide a concise user-facing plan before the first tool action, execute relevant tools, inspect their results, run appropriate checks, and repair failures before concluding. Do not claim success until the requested outcome has been verified. If a check fails, adapt rather than repeating the same failed action. Be transparent when blocked or when execution budgets are exhausted. Do not expose private chain-of-thought. Use create_skill only when the user explicitly asks to create or save a reusable skill; derive its instructions from that request and relevant conversation context, then wait for the runtime's explicit approval before the file is written.
+The active permission mode is {permission_mode}: manual asks before each tool action; auto asks before changes, commands, and untrusted MCP calls; full permits all model tool calls for this session. Respect the selected mode and never claim confirmation was given if it was not.
+
+For multi-step tasks, provide a concise user-facing plan before the first tool action, execute relevant tools, inspect their results, run appropriate checks, and repair failures before concluding. Do not claim success until the requested outcome has been verified. If a check fails, adapt rather than repeating the same failed action. Be transparent when blocked or when execution budgets are exhausted. Do not expose private chain-of-thought. Use create_skill only when the user explicitly asks to create or save a reusable skill; derive its instructions from that request and relevant context.
 
 Use local memory and retrieved documents first. When offline context is insufficient and web research tools are available, request online research through the supplied tool; the runtime checks connectivity and obtains any required consent before sending a query. If research cannot proceed, clearly label the answer as incomplete and identify what remains unverified. Cite retrieved sources using their provided source paths. Do not invent citations or facts.
 
@@ -1307,8 +1625,13 @@ Runtime budget: at most {tool_iteration_limit} tool rounds, {MAX_TOOL_CALLS} too
                 start_time = time.monotonic()
                 deadline = start_time + MAX_TASK_SECONDS
                 try:
-                    with console.status(f"[bold cyan]{status_message}[/bold cyan]"):
-                        response = await _invoke_with_budget(llm_with_tools, messages, deadline)
+                    response = await _invoke_with_status(
+                        llm_with_tools,
+                        messages,
+                        deadline,
+                        model_name=selected_model,
+                        status_message=status_message,
+                    )
                 except Exception as e:
                     error_text = str(e).lower()
                     tool_unsupported = any(
@@ -1348,13 +1671,23 @@ Runtime budget: at most {tool_iteration_limit} tool rounds, {MAX_TOOL_CALLS} too
                         supports_thinking=capabilities["thinking"],
                     )
                     llm_with_tools = llm.bind_tools(tools_list)
-                    response = await _invoke_with_budget(llm_with_tools, messages, deadline)
+                    response = await _invoke_with_status(
+                        llm_with_tools,
+                        messages,
+                        deadline,
+                        model_name=selected_model,
+                        status_message="Generating response...",
+                    )
 
                 iteration = 0
                 tool_call_count = 0
                 while getattr(response, "tool_calls", None) and iteration < tool_iteration_limit:
                     iteration += 1
-                    if iteration == 1 and response.content:
+                    if (
+                        iteration == 1
+                        and response.content
+                        and not isinstance(response, AIMessageChunk)
+                    ):
                         plan_text = str(response.content).strip()
                         if plan_text:
                             console.print(f"[cyan][Plan][/cyan] {plan_text}")
@@ -1366,6 +1699,7 @@ Runtime budget: at most {tool_iteration_limit} tool rounds, {MAX_TOOL_CALLS} too
 
                     tool_tasks = []
                     blocked_tool_messages = []
+                    declined_media_calls = []
                     for tool_call in response.tool_calls:
                         call_name = tool_call.get("name")
                         if time.monotonic() - start_time >= MAX_TASK_SECONDS:
@@ -1414,11 +1748,15 @@ Runtime budget: at most {tool_iteration_limit} tool rounds, {MAX_TOOL_CALLS} too
                                 )
                                 continue
                             if call_name != "list_microphone_devices":
-                                media_capture_authorized = approve_local_capture(
-                                    call_name,
-                                    tool_call.get("args", {}),
+                                media_capture_authorized = (
+                                    permission_mode == "full"
+                                    or approve_local_capture(
+                                        call_name,
+                                        tool_call.get("args", {}),
+                                    )
                                 )
                                 if not media_capture_authorized:
+                                    declined_media_calls.append(call_name)
                                     blocked_tool_messages.append(
                                         ToolMessage(
                                             content=(
@@ -1433,6 +1771,7 @@ Runtime budget: at most {tool_iteration_limit} tool rounds, {MAX_TOOL_CALLS} too
                             network_authorized, refusal = await authorize_network_research(
                                 call_name,
                                 tool_call.get("args", {}),
+                                permission_mode=permission_mode,
                             )
                             if not network_authorized:
                                 blocked_tool_messages.append(
@@ -1449,6 +1788,7 @@ Runtime budget: at most {tool_iteration_limit} tool rounds, {MAX_TOOL_CALLS} too
                                 local_media_allowed=provider_type == "local",
                                 media_capture_authorized=media_capture_authorized,
                                 vision_supported=capabilities["vision"] is True,
+                                permission_mode=permission_mode,
                             )
                         )
 
@@ -1489,6 +1829,38 @@ Runtime budget: at most {tool_iteration_limit} tool rounds, {MAX_TOOL_CALLS} too
                     else:
                         tool_messages = []
                     messages.extend(blocked_tool_messages + tool_messages)
+                    if declined_media_calls:
+                        console.print(
+                            "Media capture was not permitted; no camera or "
+                            "microphone access occurred."
+                        )
+                        if len(declined_media_calls) == len(response.tool_calls):
+                            devices = " and ".join(
+                                sorted(
+                                    {
+                                        "webcam"
+                                        if name == "capture_webcam_image"
+                                        else "microphone"
+                                        for name in declined_media_calls
+                                    }
+                                )
+                            )
+                            response = AIMessage(
+                                content=(
+                                    f"I did not access the {devices} because "
+                                    "permission was not granted. No capture was made."
+                                )
+                            )
+                            break
+                    webcam_error = _webcam_capture_error(
+                        response.tool_calls,
+                        blocked_tool_messages + tool_messages,
+                    )
+                    if webcam_error is not None:
+                        response = AIMessage(
+                            content=f"Webcam capture failed: {webcam_error}"
+                        )
+                        break
                     if provider_type == "local":
                         for tool_message in tool_messages:
                             reference = re.search(
@@ -1510,8 +1882,13 @@ Runtime budget: at most {tool_iteration_limit} tool rounds, {MAX_TOOL_CALLS} too
                         break
 
                     try:
-                        with console.status("[bold cyan]Processing tool outputs...[/bold cyan]"):
-                            response = await _invoke_with_budget(llm_with_tools, messages, deadline)
+                        response = await _invoke_with_status(
+                            llm_with_tools,
+                            messages,
+                            deadline,
+                            model_name=selected_model,
+                            status_message="Processing tool outputs...",
+                        )
                     except Exception as exc:
                         if provider_type == "online":
                             raise RuntimeError(
@@ -1539,7 +1916,7 @@ Runtime budget: at most {tool_iteration_limit} tool rounds, {MAX_TOOL_CALLS} too
                             "was not verified."
                         )
                     else:
-                        response = await _invoke_with_budget(
+                        response = await _invoke_with_status(
                             llm,
                             messages
                             + [
@@ -1549,18 +1926,30 @@ Runtime budget: at most {tool_iteration_limit} tool rounds, {MAX_TOOL_CALLS} too
                                 )
                             ],
                             deadline,
+                            model_name=selected_model,
+                            status_message="Finalizing response...",
                         )
 
                 elapsed_time = time.monotonic() - start_time
 
-                console.print(f"\n[bold green]AI ({selected_model}):[/bold green]")
                 content = response.content
                 full_output_content = (
-                    "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
+                    _visible_chunk_text(content)
                     if isinstance(content, list)
                     else str(content or "")
                 )
-                console.print(full_output_content)
+                if not isinstance(response, AIMessageChunk):
+                    console.print(f"\n[bold green]AI ({selected_model}):[/bold green]")
+                    console.print(
+                        full_output_content,
+                        markup=False,
+                        highlight=False,
+                        soft_wrap=True,
+                    )
+                elif not full_output_content and not getattr(response, "tool_calls", None):
+                    console.print(
+                        "[yellow]The model returned no visible response text.[/yellow]"
+                    )
                 if retrieved_citations:
                     console.print("[bold cyan][Retrieved Sources][/bold cyan]")
                     for citation in retrieved_citations:

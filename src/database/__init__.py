@@ -4,7 +4,7 @@ import pathlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, BaseMessage
-from .config import MAX_SUMMARY_CHARS
+from ..config import MAX_SUMMARY_CHARS
 
 class PersistentMemory:
     def __init__(self, db_path: str = "memory.db"):

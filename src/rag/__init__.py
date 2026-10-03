@@ -2,7 +2,9 @@ import os
 import pathlib
 import json
 import hashlib
+import heapq
 import tempfile
+import shutil
 from datetime import datetime, timezone
 from typing import Optional, List, Callable
 from rich.console import Console
@@ -10,7 +12,7 @@ from langchain_chroma import Chroma
 from langchain_ollama import OllamaEmbeddings
 from langchain_core.documents import Document
 
-from .config import (
+from ..config import (
     EMBEDDING_MODEL,
     HARDWARE_ACCELERATION_MODE,
     OLLAMA_BASE_URL,
@@ -20,10 +22,31 @@ from .config import (
     RAG_MAX_FILE_BYTES,
     RAG_MAX_PDF_PAGES,
 )
-from .hardware import ollama_acceleration_options
-from .tools import ollama_langchain_client_kwargs, track_ollama_http_clients
+from ..hardware import ollama_acceleration_options
+from ..tools import ollama_langchain_client_kwargs, track_ollama_http_clients
 
 console = Console()
+
+
+def reset_knowledge_base(index_path: Optional[str] = None) -> str:
+    """Remove only the configured Chroma index directory after path safety checks."""
+    configured_path = pathlib.Path(index_path or RAG_INDEX_PATH).expanduser()
+    if configured_path.is_symlink():
+        raise ValueError("Refusing to reset a symbolic-link Chroma index path.")
+    target = configured_path.resolve()
+    protected_paths = {
+        pathlib.Path("/").resolve(),
+        pathlib.Path.home().resolve(),
+        pathlib.Path.cwd().resolve(),
+    }
+    if target in protected_paths:
+        raise ValueError(f"Refusing to reset protected directory '{target}'.")
+    if target.exists() and not target.is_dir():
+        raise ValueError(f"Chroma index path '{target}' is not a directory.")
+    if target.exists():
+        shutil.rmtree(target)
+    return str(target)
+
 
 class HybridRAGRetriever:
     """Combines Chroma vector similarity search with BM25 lexical keyword search for high-precision hybrid retrieval."""
@@ -49,9 +72,14 @@ class HybridRAGRetriever:
         tokenized_query = query.lower().split()
         bm25_scores = self.bm25.get_scores(tokenized_query)
         
-        scored_docs = list(enumerate(bm25_scores))
-        scored_docs.sort(key=lambda x: x[1], reverse=True)
-        top_bm25_indices = [idx for idx, score in scored_docs[:k] if score > 0]
+        top_scored_docs = heapq.nsmallest(
+            k,
+            enumerate(bm25_scores),
+            key=lambda item: (-item[1], item[0]),
+        )
+        top_bm25_indices = [
+            idx for idx, score in top_scored_docs if score > 0
+        ]
         bm25_results = [self.documents[idx] for idx in top_bm25_indices]
 
         seen = set()

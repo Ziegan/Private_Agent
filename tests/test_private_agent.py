@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock, AsyncMock
 from concurrent.futures import ThreadPoolExecutor
 from rich.console import Console
 from rich.panel import Panel
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import AIMessageChunk, HumanMessage, AIMessage
 
 from src.config import load_or_create_config
 from src.database import PersistentMemory
@@ -32,6 +32,7 @@ from src.tools import (
     _get_limited_response,
     _PublicOnlyNetworkBackend,
     describe_tool_catalog,
+    get_local_datetime,
     close_outbound_http_clients,
     close_mcp_sandbox_dirs,
     ollama_client_kwargs,
@@ -45,6 +46,7 @@ from src.tools import (
 )
 from src.agent import (
     authorize_network_research,
+    _invoke_with_budget,
     execute_tool_call,
     _validate_online_base_url,
     _make_online_chat_model,
@@ -75,6 +77,7 @@ except ImportError:
 from src.skills import load_skills_from_folder, match_skill_by_relevancy
 from src.rag import (
     initialize_knowledge_base,
+    HybridRAGRetriever,
     _split_into_chunks,
     _read_index_state,
     _write_index_state_atomic,
@@ -90,7 +93,7 @@ from src.hardware import (
     normalize_acceleration_mode,
     ollama_acceleration_options,
 )
-from src.media_tools import (
+from src.tools.media_tools import (
     capture_webcam_image,
     list_microphone_devices,
     list_microphone_devices,
@@ -195,6 +198,18 @@ def test_local_chat_model_applies_configured_acceleration_mode():
         assert actual_options["async_client_kwargs"]["transport"].__class__ is (
             _PublicOnlyAsyncHTTPTransport
         )
+
+    with patch("src.agent.HARDWARE_ACCELERATION_MODE", "auto"), patch(
+        "src.agent.ChatOllama"
+    ) as chat_model:
+        agent._make_chat_model(
+            "test-model",
+            thinking_enabled=False,
+            thinking_effort="high",
+            supports_thinking=True,
+        )
+    assert chat_model.call_args.kwargs["reasoning"] is False
+    assert "think" not in chat_model.call_args.kwargs
 
 
 def test_hardware_status_reports_ollama_vram_and_server_host():
@@ -796,6 +811,93 @@ def test_rag_chunker_splits_long_documents_with_overlap():
     assert all(chunks)
 
 
+def test_permission_mode_policy_matrix(monkeypatch):
+    import src.agent as agent
+
+    monkeypatch.setattr(agent, "MCP_TOOL_NAMES", {"mcp_read"})
+    monkeypatch.setattr(agent, "MCP_AUTO_APPROVE_TOOLS", {"mcp_trusted"})
+    assert not agent._tool_needs_permission("read_local_file", "auto")
+    assert not agent._tool_needs_permission("web_search", "auto")
+    assert agent._tool_needs_permission("edit_local_file", "auto")
+    assert agent._tool_needs_permission("mcp_read", "auto")
+    assert not agent._tool_needs_permission("mcp_trusted", "auto")
+    assert agent._tool_needs_permission("read_local_file", "manual")
+    assert not agent._tool_needs_permission(
+        "web_search", "manual", network_authorized=True
+    )
+    assert not agent._tool_needs_permission("run_shell_command", "full")
+
+
+def test_reset_knowledge_base_removes_only_configured_index(tmp_path):
+    from src.rag import reset_knowledge_base
+
+    index = tmp_path / "chroma"
+    index.mkdir()
+    (index / "index.bin").write_bytes(b"data")
+    sibling = tmp_path / "keep.txt"
+    sibling.write_text("keep", encoding="utf-8")
+
+    assert pathlib.Path(reset_knowledge_base(str(index))) == index
+    assert not index.exists()
+    assert sibling.read_text(encoding="utf-8") == "keep"
+
+
+def test_reset_knowledge_base_refuses_symlinks_and_protected_paths(tmp_path):
+    from src.rag import reset_knowledge_base
+
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "index-link"
+    link.symlink_to(target, target_is_directory=True)
+    with pytest.raises(ValueError, match="symbolic-link"):
+        reset_knowledge_base(str(link))
+    with pytest.raises(ValueError, match="protected"):
+        reset_knowledge_base(str(pathlib.Path.cwd()))
+    assert target.is_dir()
+
+
+def test_local_data_reset_requires_typed_confirmation(monkeypatch, tmp_path):
+    import src.agent as agent
+
+    index = tmp_path / "chroma"
+    index.mkdir()
+    memory = PersistentMemory(db_path=str(tmp_path / "memory.sqlite"))
+    memory.save_message("session", "human", "private")
+    memory.save_summary("session", "private summary")
+    monkeypatch.setattr(agent, "RAG_INDEX_PATH", str(index))
+    monkeypatch.setattr(agent.sys, "stdin", MagicMock(isatty=lambda: True))
+    monkeypatch.setattr(agent.console, "input", MagicMock(side_effect=["3", "no"]))
+
+    agent._offer_local_data_reset(memory)
+
+    assert index.is_dir()
+    assert memory.load_history("session")[0].content == "private"
+    assert memory.get_all_episodic_summaries(session_id="session") == [
+        "private summary"
+    ]
+    memory.close()
+
+
+def test_local_data_reset_clears_both_stores_after_confirmation(monkeypatch, tmp_path):
+    import src.agent as agent
+
+    index = tmp_path / "chroma"
+    index.mkdir()
+    memory = PersistentMemory(db_path=str(tmp_path / "memory.sqlite"))
+    memory.save_message("session", "human", "private")
+    memory.save_summary("session", "private summary")
+    monkeypatch.setattr(agent, "RAG_INDEX_PATH", str(index))
+    monkeypatch.setattr(agent.sys, "stdin", MagicMock(isatty=lambda: True))
+    monkeypatch.setattr(agent.console, "input", MagicMock(side_effect=["3", "RESET"]))
+
+    agent._offer_local_data_reset(memory)
+
+    assert not index.exists()
+    assert memory.load_history("session") == []
+    assert memory.get_all_episodic_summaries(session_id="session") == []
+    memory.close()
+
+
 def test_online_api_url_normalizes_v1_and_requires_secure_remote_transport():
     assert _validate_online_base_url("https://api.example.test") == (
         "https://api.example.test/v1"
@@ -940,6 +1042,131 @@ async def test_tool_result_and_failure_are_returned_to_agent(monkeypatch):
     )
     assert "Error executing tool example: tool unavailable" in result.content
     assert "[System Reflection Prompt]" in result.content
+
+
+@pytest.mark.asyncio
+async def test_model_invocation_streams_and_aggregates_text(monkeypatch):
+    import src.agent as agent
+
+    class StreamingModel:
+        async def astream(self, messages):
+            yield AIMessageChunk(content="first ")
+            yield AIMessageChunk(content="second")
+
+    printed = []
+    monkeypatch.setattr(
+        agent.console,
+        "print",
+        lambda *values, **kwargs: printed.append((values, kwargs)),
+    )
+    response = await _invoke_with_budget(
+        StreamingModel(),
+        [],
+        time.monotonic() + 5,
+        model_name="test-model",
+    )
+
+    assert isinstance(response, AIMessageChunk)
+    assert response.content == "first second"
+    assert any(values == ("first ",) for values, _ in printed)
+    assert any(values == ("second",) for values, _ in printed)
+
+
+def test_visible_chunk_text_includes_text_blocks():
+    import src.agent as agent
+
+    assert agent._visible_chunk_text(
+        ["Hello", {"type": "text", "text": " world"}, {"type": "image"}]
+    ) == "Hello world"
+
+
+@pytest.mark.asyncio
+async def test_model_invocation_falls_back_to_nonstreaming_models():
+    model = MagicMock()
+    expected = types.SimpleNamespace(content="complete", tool_calls=[])
+    model.ainvoke = AsyncMock(return_value=expected)
+
+    response = await _invoke_with_budget(model, [], time.monotonic() + 5)
+
+    assert response is expected
+    model.ainvoke.assert_awaited_once_with([])
+
+
+@pytest.mark.asyncio
+async def test_streaming_response_is_not_rendered_inside_live_status(monkeypatch):
+    import src.agent as agent
+    from contextlib import contextmanager
+
+    status_active = False
+    printed = []
+
+    @contextmanager
+    def status(_message):
+        nonlocal status_active
+        status_active = True
+        try:
+            yield
+        finally:
+            status_active = False
+
+    class StreamingModel:
+        async def astream(self, _messages):
+            assert not status_active
+            yield AIMessageChunk(content="visible answer")
+
+    monkeypatch.setattr(agent.console, "status", status)
+    monkeypatch.setattr(
+        agent.console,
+        "print",
+        lambda *values, **kwargs: printed.append((values, kwargs)),
+    )
+
+    response = await agent._invoke_with_status(
+        StreamingModel(),
+        [],
+        time.monotonic() + 5,
+        model_name="test-model",
+        status_message="Generating",
+    )
+
+    assert response.content == "visible answer"
+    assert not status_active
+    assert any(values == ("visible answer",) for values, _ in printed)
+
+
+@pytest.mark.asyncio
+async def test_nonstreaming_response_keeps_live_status(monkeypatch):
+    import src.agent as agent
+    from contextlib import contextmanager
+
+    status_active = False
+
+    @contextmanager
+    def status(_message):
+        nonlocal status_active
+        status_active = True
+        try:
+            yield
+        finally:
+            status_active = False
+
+    class NonStreamingModel:
+        async def ainvoke(self, _messages):
+            assert status_active
+            return types.SimpleNamespace(content="complete", tool_calls=[])
+
+    monkeypatch.setattr(agent.console, "status", status)
+
+    response = await agent._invoke_with_status(
+        NonStreamingModel(),
+        [],
+        time.monotonic() + 5,
+        model_name="test-model",
+        status_message="Generating",
+    )
+
+    assert response.content == "complete"
+    assert not status_active
 
 
 @pytest.mark.asyncio
@@ -1089,6 +1316,41 @@ def test_tool_catalog_shows_origin_permissions_and_effects(monkeypatch):
     assert catalog["mcp_read"]["effects"] == "network-capable; server-defined effects"
     assert catalog["web_search"]["effects"] == "network"
     assert catalog["edit_local_file"]["effects"] == "may modify local state"
+
+
+def test_local_datetime_tool_reports_local_calendar_and_timezone():
+    from datetime import datetime
+
+    result = get_local_datetime.invoke({})
+    local_now = datetime.now().astimezone()
+
+    assert f"Weekday: {local_now:%A}" in result
+    assert f"Month: {local_now:%B}" in result
+    assert f"Year: {local_now:%Y}" in result
+    assert f"UTC{local_now:%z}" in result
+    assert "Local date:" in result
+    assert "Local time:" in result
+
+
+def test_local_datetime_tool_is_listed_as_read_only():
+    catalog = {entry["name"]: entry for entry in describe_tool_catalog()}
+
+    assert catalog["get_local_datetime"]["permission"] == (
+        "no approval required; reads local system clock"
+    )
+    assert catalog["get_local_datetime"]["effects"] == "read-only/local"
+
+
+def test_agent_current_datetime_context_includes_local_date_and_timezone():
+    from datetime import datetime
+    from src.agent import _current_datetime_context
+
+    context = _current_datetime_context()
+    now = datetime.now().astimezone()
+
+    assert f"{now:%A, %B} {now.day}, {now.year}" in context
+    assert f"{now:%H:%M:%S %Z} (UTC{now:%z})" in context
+    assert "authoritative current date/time" in context
 
 
 def test_tool_catalog_prints_each_entry_on_one_line():
@@ -1496,7 +1758,7 @@ async def test_skill_creation_is_blocked_without_interactive_terminal(monkeypatc
         },
         "id": "create-noninteractive",
     })
-    assert "requires interactive user approval" in result.content
+    assert "requires interactive approval" in result.content
     assert not (tmp_path / "skills" / "noninteractive.md").exists()
 
 
@@ -1541,6 +1803,19 @@ def test_webcam_capture_keeps_image_transient_and_releases_device(monkeypatch):
     assert converted[0]["role"] == "user"
     assert converted[0]["images"] == ["ZmFrZS1qcGVnLWZyYW1l"]
     assert consume_captured_image(f"camera-image:{match.group(1)}") is None
+
+
+def test_media_capture_consent_prompt_shows_y_n_choices(monkeypatch):
+    import src.tools.media_tools as media_tools
+    from src.run_logging import render_console_values
+
+    prompt = MagicMock(return_value="")
+    monkeypatch.setattr(media_tools, "console", MagicMock(input=prompt))
+    monkeypatch.setattr(sys, "stdin", MagicMock(isatty=lambda: True))
+
+    assert not media_tools.approve_local_capture("capture_webcam_image", {})
+    rendered_prompt = render_console_values(prompt.call_args.args[0], end="")
+    assert "[y/N]" in rendered_prompt
 
 
 def test_microphone_transcription_uses_local_model_without_downloading(
@@ -1623,6 +1898,40 @@ async def test_media_tools_require_local_runtime_authorization(monkeypatch):
     assert "does not declare vision support" in result.content
     camera.invoke.assert_not_called()
 
+
+def test_webcam_tool_failure_is_reported_without_model_retry():
+    import src.agent as agent
+    from langchain_core.messages import ToolMessage
+
+    error = agent._webcam_capture_error(
+        [{"name": "capture_webcam_image", "id": "camera-failed"}],
+        [
+            ToolMessage(
+                content=(
+                    "Camera capture is optional. Install media support with "
+                    "`python -m pip install '.[media]'`."
+                ),
+                tool_call_id="camera-failed",
+            )
+        ],
+    )
+
+    assert error is not None
+    assert "Camera capture is optional" in error
+    assert (
+        agent._webcam_capture_error(
+            [{"name": "capture_webcam_image", "id": "camera-declined"}],
+            [
+                ToolMessage(
+                    content="Error: Media capture was declined; the device was not accessed.",
+                    tool_call_id="camera-declined",
+                )
+            ],
+        )
+        is None
+    )
+
+
 def test_malformed_config_handling(tmp_path, monkeypatch):
     conf_path = tmp_path / ".private_agent.conf"
     conf_path.write_text("{ malformed_json: ", encoding="utf-8")
@@ -1631,6 +1940,55 @@ def test_malformed_config_handling(tmp_path, monkeypatch):
     config = load_or_create_config()
     assert isinstance(config, dict)
     assert "default_model_temperature" in config
+
+
+def test_debug_log_is_created_with_owner_only_permissions(tmp_path, monkeypatch):
+    import stat
+    import src.run_logging as run_logging
+
+    monkeypatch.setattr(run_logging, "DEBUG_LOG_ENABLED", True)
+    monkeypatch.setattr(
+        pathlib.Path,
+        "home",
+        classmethod(lambda cls: tmp_path),
+    )
+    try:
+        log_path = run_logging.start_debug_logging()
+        assert log_path is not None
+        run_logging.RUN_LOGGER.info("trace marker")
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(log_path.parent.stat().st_mode) == 0o700
+        run_logging.stop_debug_logging()
+        assert "trace marker" in log_path.read_text(encoding="utf-8")
+    finally:
+        run_logging.stop_debug_logging()
+
+
+def test_config_uses_per_user_home_path():
+    import src.config as config
+
+    assert config.CONFIG_FILE_PATH == pathlib.Path.home() / ".private_agent.conf"
+
+
+def test_config_creates_private_default_file(tmp_path, monkeypatch):
+    import stat
+    import src.config as config
+
+    config_path = tmp_path / ".private_agent.conf"
+    monkeypatch.setattr(config, "CONFIG_FILE_PATH", config_path)
+
+    settings = load_or_create_config()
+
+    assert settings == config.DEFAULT_CONFIG
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
+def test_debug_log_config_defaults_off(tmp_path, monkeypatch):
+    import src.config as config
+
+    monkeypatch.setattr(config, "CONFIG_FILE_PATH", tmp_path / ".private_agent.conf")
+    assert load_or_create_config()["DEBUG_LOG_ENABLED"] == 0
+
 
 @patch("src.rag.OllamaEmbeddings")
 @patch("src.rag.Chroma")
@@ -1887,12 +2245,12 @@ async def test_local_agent_turn_persists_history_and_summary(monkeypatch, tmp_pa
         agent, "initialize_knowledge_base", lambda path, **kwargs: None
     )
     monkeypatch.setattr(agent, "load_skills_from_folder", lambda path: {})
-    inputs = MagicMock(side_effect=["", "", "1", "", "hello", "exit"])
+    inputs = MagicMock(side_effect=["", "", "", "", "1", "", "hello", "exit"])
     monkeypatch.setattr(agent.console, "input", inputs)
 
     await run_agent_cli_async()
 
-    inputs.side_effect = ["", "", "y", "1", "", "exit"]
+    inputs.side_effect = ["", "", "", "y", "", "1", "", "exit"]
     await run_agent_cli_async()
 
     memory = PersistentMemory(db_path=str(database_path))
@@ -2097,18 +2455,47 @@ def test_model_fallback_does_not_hide_unrecognized_configuration_error(mock_chat
 
 @patch("src.agent.ollama.Client")
 def test_model_capabilities_are_read_from_ollama_metadata(mock_client):
-    from src.agent import inspect_model_capabilities
+    from src import agent
+
+    agent._MODEL_CAPABILITIES_CACHE.clear()
 
     mock_client.return_value.show.return_value = {
         "capabilities": ["completion", "tools", "vision", "thinking"]
     }
-    capabilities = inspect_model_capabilities("local-model")
+    capabilities = agent.inspect_model_capabilities("local-model")
     assert capabilities["tools"] is True
     assert capabilities["function_calls"] is True
     assert capabilities["vision"] is True
     assert capabilities["thinking"] is True
     assert capabilities["audio"] is False
+    capabilities["tools"] = False
+    cached_capabilities = agent.inspect_model_capabilities("local-model")
+    assert cached_capabilities["tools"] is True
     mock_client.assert_called_once()
+    agent._MODEL_CAPABILITIES_CACHE.clear()
+
+
+def test_hybrid_rag_selects_top_bm25_candidates_without_full_sort():
+    class FakeBM25:
+        def get_scores(self, query):
+            return [0.4, 0.9, 0.9, 0.2, 0.7]
+
+    documents = [
+        types.SimpleNamespace(
+            page_content=f"document {index}",
+            metadata={"source": f"source-{index}", "chunk": index},
+        )
+        for index in range(5)
+    ]
+    retriever = HybridRAGRetriever.__new__(HybridRAGRetriever)
+    retriever.documents = documents
+    retriever.bm25 = FakeBM25()
+    retriever.vectorstore = MagicMock()
+    retriever.vectorstore.similarity_search.return_value = []
+
+    results = retriever.similarity_search("query", k=2)
+
+    assert results == [documents[1], documents[2]]
 
 @patch("mcp.client.stdio.stdio_client")
 @patch("mcp.client.session.ClientSession")
