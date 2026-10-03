@@ -4,10 +4,15 @@ import pathlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, BaseMessage
-from ..config import MAX_SUMMARY_CHARS
+from ..config import (
+    DEFAULT_DB_PATH,
+    DEFAULT_EPISODIC_SUMMARIES,
+    DEFAULT_HISTORY_MESSAGES,
+    MAX_SUMMARY_CHARS,
+)
 
 class PersistentMemory:
-    def __init__(self, db_path: str = "memory.db"):
+    def __init__(self, db_path: str = DEFAULT_DB_PATH):
         self.db_path = str(pathlib.Path(db_path).expanduser()) if db_path != ":memory:" else db_path
         self._lock = threading.Lock()
         if self.db_path != ":memory:":
@@ -40,7 +45,11 @@ class PersistentMemory:
                     (session_id, role, content)
                 )
 
-    def get_history(self, session_id: Optional[str] = None, limit: int = 20) -> List[BaseMessage]:
+    def get_history(
+        self,
+        session_id: Optional[str] = None,
+        limit: int = DEFAULT_HISTORY_MESSAGES,
+    ) -> List[BaseMessage]:
         with self._lock:
             cursor = self.conn.cursor()
             if session_id:
@@ -93,7 +102,11 @@ class PersistentMemory:
             rows = cursor.fetchall()
         return [row[0] for row in rows]
 
-    def load_history(self, session_id: Optional[str] = None, limit: int = 20) -> List[BaseMessage]:
+    def load_history(
+        self,
+        session_id: Optional[str] = None,
+        limit: int = DEFAULT_HISTORY_MESSAGES,
+    ) -> List[BaseMessage]:
         """Alias for get_history to support test expectations."""
         return self.get_history(session_id, limit)
 
@@ -132,7 +145,9 @@ class PersistentMemory:
                 return cursor.rowcount
 
     def get_all_episodic_summaries(
-        self, limit: int = 5, session_id: Optional[str] = None
+        self,
+        limit: int = DEFAULT_EPISODIC_SUMMARIES,
+        session_id: Optional[str] = None,
     ) -> List[str]:
         """Retrieve recent summaries, optionally restricted to one session."""
         with self._lock:

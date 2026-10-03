@@ -47,6 +47,7 @@ from src.tools import (
 from src.agent import (
     authorize_network_research,
     _invoke_with_budget,
+    _online_request_failure,
     execute_tool_call,
     _validate_online_base_url,
     _make_online_chat_model,
@@ -909,6 +910,45 @@ def test_online_api_url_normalizes_v1_and_requires_secure_remote_transport():
         _validate_online_base_url("http://api.example.test/v1")
     with pytest.raises(ValueError):
         _validate_online_base_url("https://user:secret@api.example.test/v1")
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [
+        (400, "provider rejected the request"),
+        (401, "rejected authentication"),
+        (403, "denied access"),
+        (404, "not found"),
+        (429, "rate limit or account quota"),
+        (503, "server error"),
+    ],
+)
+def test_online_request_failure_reports_status_without_response_secrets(
+    status_code, expected
+):
+    failure = types.SimpleNamespace(
+        status_code=status_code,
+        response=types.SimpleNamespace(
+            status_code=status_code,
+            text="sensitive-provider-response",
+        ),
+    )
+
+    message = _online_request_failure(failure)
+
+    assert f"HTTP {status_code}" in message
+    assert expected in message
+    assert "sensitive-provider-response" not in message
+
+
+def test_online_request_failure_without_status_hides_exception_details():
+    failure = RuntimeError("secret-token and private response body")
+
+    message = _online_request_failure(failure)
+
+    assert "check connectivity, endpoint, model, and credentials" in message
+    assert "secret-token" not in message
+    assert "private response body" not in message
 
 
 def test_online_model_uses_openai_compatible_client_with_session_key():
@@ -1979,7 +2019,81 @@ def test_config_creates_private_default_file(tmp_path, monkeypatch):
 
     settings = load_or_create_config()
 
-    assert settings == config.DEFAULT_CONFIG
+    assert settings["paths"] == config.DEFAULT_CONFIG["paths"]
+    assert settings["agent"] == config.DEFAULT_CONFIG["agent"]
+    assert settings["DEBUG_LOG_ENABLED"] == 0
+    assert json.loads(config_path.read_text(encoding="utf-8")) == config.DEFAULT_CONFIG
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
+def test_categorized_config_preserves_legacy_keys_and_prefers_category_values():
+    import src.config as config
+
+    merged = config._merge_config({
+        "max_tool_output_chars": 4096,
+        "agent": {"max_tool_output_chars": 2048},
+        "max_read_file_bytes": 4096,
+        "tools": {"max_read_file_bytes": 8192},
+    })
+
+    assert merged["agent"]["max_tool_output_chars"] == 2048
+    assert merged["max_tool_output_chars"] == 2048
+    assert merged["tools"]["max_read_file_bytes"] == 8192
+    assert merged["max_read_file_bytes"] == 8192
+
+
+def test_categorized_config_maps_legacy_flat_settings():
+    import src.config as config
+
+    merged = config._merge_config({
+        "max_tool_output_chars": 4096,
+        "rag_max_file_bytes": 123456,
+        "DEBUG_LOG_ENABLED": 1,
+    })
+
+    assert merged["agent"]["max_tool_output_chars"] == 4096
+    assert merged["rag"]["max_file_bytes"] == 123456
+    assert merged["logging"]["debug_enabled"] == 1
+
+
+def test_runtime_limits_read_categorized_config_and_validate_ranges(monkeypatch):
+    import src.config as config
+
+    monkeypatch.setattr(
+        config,
+        "APP_CONFIG",
+        {"tools": {"max_read_file_bytes": 4096}, "media": {"jpeg_quality": 150}},
+    )
+
+    assert config._configured_int("tools", "max_read_file_bytes", 1024) == 4096
+    assert config._configured_int_range("media", "jpeg_quality", 85, 1, 100) == 85
+
+
+def test_loading_legacy_config_migrates_it_to_categorized_sections(
+    tmp_path, monkeypatch
+):
+    import stat
+    import src.config as config
+
+    config_path = tmp_path / ".private_agent.conf"
+    config_path.write_text(
+        json.dumps({
+            "max_tool_output_chars": 4096,
+            "rag_max_file_bytes": 123456,
+            "DEBUG_LOG_ENABLED": 1,
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config, "CONFIG_FILE_PATH", config_path)
+
+    runtime_config = load_or_create_config()
+    saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert saved_config["agent"]["max_tool_output_chars"] == 4096
+    assert saved_config["rag"]["max_file_bytes"] == 123456
+    assert saved_config["logging"]["debug_enabled"] == 1
+    assert "max_tool_output_chars" not in saved_config
+    assert runtime_config["max_tool_output_chars"] == 4096
     assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
 
 

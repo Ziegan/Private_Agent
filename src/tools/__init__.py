@@ -34,6 +34,22 @@ from ..config import (
     INTERNET_CHECK_TIMEOUT,
     MAX_NETWORK_CONCURRENCY,
     NETWORK_REQUEST_TIMEOUT,
+    MAX_STREAM_TIMEOUT,
+    MAX_WEBPAGE_BYTES,
+    MAX_DOWNLOAD_BYTES,
+    MAX_HTTP_REDIRECTS,
+    MAX_SEARCH_QUERY_CHARS,
+    MAX_SEARCH_RESULTS,
+    MAX_FETCHED_WEBPAGE_CHARS,
+    MAX_READ_FILE_BYTES,
+    FILE_READ_CHUNK_BYTES,
+    BINARY_PROBE_BYTES,
+    SHELL_COMMAND_TIMEOUT,
+    DEFAULT_HISTORY_READ_LIMIT,
+    SKILL_DESCRIPTION_PREVIEW_CHARS,
+    MAX_SKILL_NAME_CHARS,
+    MAX_SKILL_DESCRIPTION_CHARS,
+    MAX_SKILL_INSTRUCTION_CHARS,
     MCP_AUTO_APPROVE_TOOLS,
     SKILLS_FOLDER_DEFAULT,
 )
@@ -62,7 +78,11 @@ def set_active_db_path(path: str):
     ACTIVE_DB_PATH = os.path.abspath(path)
 
 # --- NETWORK CONNECTIVITY UTILITY ---
-def check_internet_connection(host: str = "8.8.8.8", port: int = 53, timeout: float = 2.0) -> bool:
+def check_internet_connection(
+    host: str = INTERNET_CHECK_HOST,
+    port: int = INTERNET_CHECK_PORT,
+    timeout: float = INTERNET_CHECK_TIMEOUT,
+) -> bool:
     """Quick socket probe to check active TCP-level internet reachability."""
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -179,9 +199,6 @@ def require_internet(func: Callable) -> Callable:
     return wrapper
 
 
-MAX_WEBPAGE_BYTES = 2 * 1024 * 1024
-MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
-MAX_HTTP_REDIRECTS = 5
 _network_slots = threading.BoundedSemaphore(MAX_NETWORK_CONCURRENCY)
 _outbound_http_clients = []
 _mcp_sandbox_dirs = []
@@ -373,7 +390,7 @@ def ollama_client_kwargs() -> dict:
     """Return Ollama SDK kwargs using peer-validated transports."""
     return {
         "transport": _PublicOnlySyncHTTPTransport(allow_loopback=True),
-        "timeout": httpx.Timeout(600, connect=NETWORK_REQUEST_TIMEOUT),
+        "timeout": httpx.Timeout(MAX_STREAM_TIMEOUT, connect=NETWORK_REQUEST_TIMEOUT),
         "follow_redirects": False,
         "trust_env": False,
     }
@@ -384,13 +401,13 @@ def ollama_langchain_client_kwargs() -> dict:
     return {
         "sync_client_kwargs": {
             "transport": _PublicOnlySyncHTTPTransport(allow_loopback=True),
-            "timeout": httpx.Timeout(600, connect=NETWORK_REQUEST_TIMEOUT),
+            "timeout": httpx.Timeout(MAX_STREAM_TIMEOUT, connect=NETWORK_REQUEST_TIMEOUT),
             "follow_redirects": False,
             "trust_env": False,
         },
         "async_client_kwargs": {
             "transport": _PublicOnlyAsyncHTTPTransport(allow_loopback=True),
-            "timeout": httpx.Timeout(600, connect=NETWORK_REQUEST_TIMEOUT),
+            "timeout": httpx.Timeout(MAX_STREAM_TIMEOUT, connect=NETWORK_REQUEST_TIMEOUT),
             "follow_redirects": False,
             "trust_env": False,
         },
@@ -589,7 +606,10 @@ class DownloadWebFileInput(BaseModel):
     save_path: str = Field(..., description="Destination file path inside the workspace.")
 
 class ReadSqliteHistoryInput(BaseModel):
-    limit: int = Field(default=20, description="Number of recent chat history messages to read.")
+    limit: int = Field(
+        default=DEFAULT_HISTORY_READ_LIMIT,
+        description="Number of recent chat history messages to read.",
+    )
 
 class DeleteSqliteHistoryInput(BaseModel):
     session_id: Optional[str] = Field(default=None, description="Specific session ID to delete, or leave empty/all to wipe.")
@@ -598,19 +618,19 @@ class CreateSkillInput(BaseModel):
     name: str = Field(
         ...,
         min_length=1,
-        max_length=64,
+        max_length=MAX_SKILL_NAME_CHARS,
         description="Short skill title or slug, for example 'Python testing'.",
     )
     description: str = Field(
         ...,
         min_length=1,
-        max_length=500,
+        max_length=MAX_SKILL_DESCRIPTION_CHARS,
         description="When this skill should be used and what it specializes in.",
     )
     instructions: str = Field(
         ...,
         min_length=1,
-        max_length=20_000,
+        max_length=MAX_SKILL_INSTRUCTION_CHARS,
         description="Markdown instructions for the skill, based only on the user's request and relevant context.",
     )
 
@@ -636,21 +656,23 @@ def read_local_file(file_path: str) -> str:
         if not target.exists():
             return f"Error: File '{file_path}' not found."
         
-        # Enforce file size limit (1MB max per the oversized file guard requirement, up to 10MB)
-        max_size = 1024 * 1024  # 1MB
+        max_size = MAX_READ_FILE_BYTES
         file_size = target.stat().st_size
         if file_size > max_size:
-            return f"Error: File '{file_path}' exceeds the maximum allowed size of 1MB."
+            return (
+                f"Error: File '{file_path}' exceeds the maximum allowed size of "
+                f"{max_size} bytes."
+            )
 
         # Quick binary check on the first chunk
         with open(target, "rb") as f:
-            header_bytes = f.read(2048)
+            header_bytes = f.read(BINARY_PROBE_BYTES)
             if b'\x00' in header_bytes:
                 return f"Error: File '{file_path}' appears to be a binary file and cannot be read as text."
 
         # Stream-based chunking read to protect memory overhead
         chunks = []
-        chunk_size = 65536  # 64KB chunks
+        chunk_size = FILE_READ_CHUNK_BYTES
         with open(target, "rb") as f:
             while True:
                 chunk = f.read(chunk_size)
@@ -700,7 +722,7 @@ def run_shell_command(command: str) -> str:
         )
         if not _tool_invocation_approved.get():
             approval = console.input(
-                f"[yellow]Approve command {' '.join(shlex.quote(arg) for arg in command_args)}? [y/N]: [/yellow]"
+                f"[yellow]Approve command {' '.join(shlex.quote(arg) for arg in command_args)}? \\[y/N]: [/yellow]"
             ).strip().lower()
             if approval != "y":
                 return "Error: Command execution was not approved; no command was run."
@@ -724,7 +746,7 @@ def run_shell_command(command: str) -> str:
             shell=False,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=SHELL_COMMAND_TIMEOUT,
             env=environment,
         )
         output = result.stdout + result.stderr
@@ -737,8 +759,10 @@ def run_shell_command(command: str) -> str:
 def _search_duckduckgo(query: str, client_factory=public_only_sync_client) -> str:
     from bs4 import BeautifulSoup
 
-    if not query.strip() or len(query) > 2000:
-        raise ValueError("Search query must contain 1 to 2000 characters.")
+    if not query.strip() or len(query) > MAX_SEARCH_QUERY_CHARS:
+        raise ValueError(
+            f"Search query must contain 1 to {MAX_SEARCH_QUERY_CHARS} characters."
+        )
     acquired = _network_slots.acquire(timeout=NETWORK_REQUEST_TIMEOUT)
     if not acquired:
         raise TimeoutError("Outbound request concurrency limit wait timed out.")
@@ -781,7 +805,7 @@ def _search_duckduckgo(query: str, client_factory=public_only_sync_client) -> st
                         "html.parser",
                     )
                     results = []
-                    for result in soup.select(".result")[:3]:
+                    for result in soup.select(".result")[:MAX_SEARCH_RESULTS]:
                         anchor = result.select_one("a.result__a")
                         if not anchor or not anchor.get("href"):
                             continue
@@ -843,7 +867,11 @@ def fetch_webpage(url: str) -> str:
         for element in soup(["script", "style", "nav", "footer", "header", "aside"]):
             element.decompose()
         text = soup.get_text(separator="\n", strip=True)
-        return text[:12000] + "\n[Truncated...]" if len(text) > 12000 else text
+        return (
+            text[:MAX_FETCHED_WEBPAGE_CHARS] + "\n[Truncated...]"
+            if len(text) > MAX_FETCHED_WEBPAGE_CHARS
+            else text
+        )
 
     try:
         try:
@@ -923,7 +951,7 @@ def download_web_file(url: str, save_path: str) -> str:
         return f"Failed to download file: {str(e)}"
 
 @tool(args_schema=ReadSqliteHistoryInput)
-def read_chat_history_from_sqlite(limit: int = 20) -> str:
+def read_chat_history_from_sqlite(limit: int = DEFAULT_HISTORY_READ_LIMIT) -> str:
     """Read recent conversation log entries directly from the SQLite persistent memory database using thread-safe context management and locks."""
     try:
         with _sqlite_lock:
@@ -973,7 +1001,10 @@ def create_skill(name: str, description: str, instructions: str) -> str:
         display_name = name.strip()
         skill = AgentSkill(
             name=display_name,
-            description=f"{description.strip()} {instructions.strip()[:100]}",
+            description=(
+                f"{description.strip()} "
+                f"{instructions.strip()[:SKILL_DESCRIPTION_PREVIEW_CHARS]}"
+            ),
             system_prompt=f"[Skill Markdown Profile: {display_name}]\n"
             f"{target.read_text(encoding='utf-8')}",
         )

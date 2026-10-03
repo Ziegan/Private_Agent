@@ -13,6 +13,12 @@ from typing import Optional, Sequence
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from rich.console import Console
+from ..config import (
+    CODE_TASK_FAILURE_OUTPUT_CHARS,
+    CODE_TASK_GIT_TIMEOUT,
+    CODE_TASK_SUCCESS_OUTPUT_CHARS,
+    CODE_TASK_TEST_TIMEOUT,
+)
 
 console = Console()
 
@@ -53,7 +59,9 @@ def is_code_task_request(text: str) -> bool:
     return any(pattern.search(text) for pattern in _CODE_TASK_PATTERNS)
 
 
-def _run_git(root: Path, *args: str, timeout: int = 30) -> subprocess.CompletedProcess:
+def _run_git(
+    root: Path, *args: str, timeout: int = CODE_TASK_GIT_TIMEOUT
+) -> subprocess.CompletedProcess:
     command = ["git", "-C", str(root), *args]
     try:
         isolated_command, environment = _isolated_command(command, root)
@@ -242,7 +250,7 @@ def _ask_without_git(reason: str) -> bool:
     console.print(f"[yellow]Git checkpointing is unavailable: {reason}[/yellow]")
     return console.input(
         "[yellow]Proceed with this isolated code task without Git initialization "
-        "and checkpoint commits? [y/N]: [/yellow]"
+        "and checkpoint commits? \\[y/N]: [/yellow]"
     ).strip().lower() == "y"
 
 
@@ -538,7 +546,7 @@ class CodeTaskWorkspace:
             paths.append(path.replace(os.sep, "/"))
         return paths
 
-    def _run_tests(self, timeout: int = 180) -> str:
+    def _run_tests(self, timeout: int = CODE_TASK_TEST_TIMEOUT) -> str:
         files = []
         for path in _project_files(self.root):
             relative_path = path.relative_to(self.root).as_posix()
@@ -641,11 +649,13 @@ class CodeTaskWorkspace:
             output = (result.stdout + result.stderr).strip()
             if result.returncode == 0:
                 successes.append(
-                    f"Passed: {' '.join(command)}\n{output[-6000:]}"
+                    f"Passed: {' '.join(command)}\n"
+                    f"{output[-CODE_TASK_SUCCESS_OUTPUT_CHARS:]}"
                 )
             else:
                 failures.append(
-                    f"{' '.join(command)} exited {result.returncode}:\n{output[-3000:]}"
+                    f"{' '.join(command)} exited {result.returncode}:\n"
+                    f"{output[-CODE_TASK_FAILURE_OUTPUT_CHARS:]}"
                 )
         if failures:
             self.last_test_result = "Tests failed or incomplete:\n" + "\n".join(

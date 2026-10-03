@@ -2,13 +2,28 @@ import pathlib
 import re
 from typing import Optional, Dict
 from rich.console import Console
+from ..config import (
+    MAX_SKILL_DESCRIPTION_CHARS,
+    MAX_SKILL_INSTRUCTION_CHARS,
+    MAX_SKILL_NAME_CHARS,
+    SKILL_DESCRIPTION_PREVIEW_CHARS,
+    SKILL_MAX_ITERATIONS,
+    SKILL_RELEVANCE_EXACT_MATCH_SCORE,
+    SKILL_RELEVANCE_PREFIX_MATCH_SCORE,
+    SKILL_RELEVANCE_THRESHOLD,
+    SKILL_RELEVANCE_WORD_MATCH_SCORE,
+)
 
 console = Console()
-MAX_SKILL_DESCRIPTION_CHARS = 500
-MAX_SKILL_INSTRUCTION_CHARS = 20_000
 
 class AgentSkill:
-    def __init__(self, name: str, description: str, system_prompt: str, max_iterations: int = 15):
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        system_prompt: str,
+        max_iterations: int = SKILL_MAX_ITERATIONS,
+    ):
         self.name = name
         self.description = description
         self.system_prompt = system_prompt
@@ -27,9 +42,9 @@ def load_skills_from_folder(folder_path: str) -> Dict[str, AgentSkill]:
             skill_name = md_file.stem.replace("_", " ").title()
             skills[md_file.stem] = AgentSkill(
                 name=skill_name,
-                description=content[:100] + "...",
+                description=content[:SKILL_DESCRIPTION_PREVIEW_CHARS] + "...",
                 system_prompt=f"[Skill Markdown Profile: {skill_name}]\n{content}",
-                max_iterations=15
+                max_iterations=SKILL_MAX_ITERATIONS,
             )
         except Exception as e:
             console.print(f"[red][Warning] Failed loading markdown skill file {md_file.name}: {e}[/red]")
@@ -46,11 +61,11 @@ def create_skill_file(
     normalized_name = re.sub(r"[\s-]+", "_", name.strip().lower())
     if (
         not normalized_name
-        or len(normalized_name) > 64
+        or len(normalized_name) > MAX_SKILL_NAME_CHARS
         or not re.fullmatch(r"[a-z0-9_]+", normalized_name)
     ):
         raise ValueError(
-            "Skill name must be 1-64 characters using letters, numbers, "
+            f"Skill name must be 1-{MAX_SKILL_NAME_CHARS} characters using letters, numbers, "
             "spaces, hyphens, or underscores."
         )
     description = description.strip()
@@ -100,11 +115,11 @@ def match_skill_by_relevancy(user_input: str, loaded_skills: Dict[str, AgentSkil
         score = 0.0
         for token in query_tokens:
             if token in key_tokens:
-                score += 3.0
+                score += SKILL_RELEVANCE_EXACT_MATCH_SCORE
             if token in name_tokens:
-                score += 2.0
+                score += SKILL_RELEVANCE_PREFIX_MATCH_SCORE
             if token in desc_tokens:
-                score += 1.0
+                score += SKILL_RELEVANCE_WORD_MATCH_SCORE
 
         # Normalize or check threshold to prevent false positives
         if score > highest_score:
@@ -112,8 +127,7 @@ def match_skill_by_relevancy(user_input: str, loaded_skills: Dict[str, AgentSkil
             best_skill = skill
 
     # Require a minimum overlap score threshold to prevent weak/false-positive matches
-    threshold = 1.5
-    if highest_score >= threshold:
+    if highest_score >= SKILL_RELEVANCE_THRESHOLD:
         return best_skill
     
     return None

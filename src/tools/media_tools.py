@@ -11,29 +11,38 @@ from typing import Optional
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from rich.console import Console
+from ..config import (
+    DEFAULT_CAMERA_DEVICE_INDEX,
+    DEFAULT_MICROPHONE_SECONDS,
+    JPEG_QUALITY,
+    MAX_CAMERA_DEVICE_INDEX,
+    MAX_CAPTURED_IMAGE_BYTES,
+    MAX_IMAGE_HEIGHT,
+    MAX_IMAGE_WIDTH,
+    MAX_IMAGES_PER_TURN,
+    MAX_MICROPHONE_DEVICE_INDEX,
+    MAX_MICROPHONE_SECONDS,
+    MICROPHONE_SAMPLE_RATE,
+)
 
 _captured_images: dict[str, bytes] = {}
 _image_capture_count = 0
 _image_lock = threading.Lock()
-MAX_CAPTURED_IMAGE_BYTES = 2 * 1024 * 1024
-MAX_IMAGES_PER_TURN = 3
-MAX_MICROPHONE_SECONDS = 30
-SAMPLE_RATE = 16_000
 console = Console()
 
 
 class WebcamCaptureInput(BaseModel):
     device_index: int = Field(
-        default=0,
+        default=DEFAULT_CAMERA_DEVICE_INDEX,
         ge=0,
-        le=32,
+        le=MAX_CAMERA_DEVICE_INDEX,
         description="Camera device index; usually 0 for the built-in or first camera.",
     )
 
 
 class MicrophoneInput(BaseModel):
     duration_seconds: float = Field(
-        default=5.0,
+        default=DEFAULT_MICROPHONE_SECONDS,
         gt=0,
         le=MAX_MICROPHONE_SECONDS,
         description="Recording length in seconds (maximum 30 seconds).",
@@ -41,7 +50,7 @@ class MicrophoneInput(BaseModel):
     device_index: Optional[int] = Field(
         default=None,
         ge=0,
-        le=128,
+        le=MAX_MICROPHONE_DEVICE_INDEX,
         description="Input-device index, or omit to use the system default microphone.",
     )
 
@@ -107,7 +116,7 @@ def approve_local_capture(tool_name: str, args: dict) -> bool:
     if not __import__("sys").stdin.isatty():
         return False
     details = (
-        f"for {float(args.get('duration_seconds', 5)):.1f} seconds"
+        f"for {float(args.get('duration_seconds', DEFAULT_MICROPHONE_SECONDS)):.1f} seconds"
         if tool_name == "record_microphone_audio"
         else f"from camera device {args.get('device_index', 0)}"
     )
@@ -119,7 +128,7 @@ def approve_local_capture(tool_name: str, args: dict) -> bool:
 
 
 @tool(args_schema=WebcamCaptureInput)
-def capture_webcam_image(device_index: int = 0) -> str:
+def capture_webcam_image(device_index: int = DEFAULT_CAMERA_DEVICE_INDEX) -> str:
     """Capture one still frame from a local webcam for the vision-capable local model."""
     capture = None
     try:
@@ -145,7 +154,7 @@ def capture_webcam_image(device_index: int = 0) -> str:
         if not ok or frame is None:
             return f"Camera device {device_index} did not provide a frame."
         height, width = frame.shape[:2]
-        scale = min(1.0, 1280 / width, 720 / height)
+        scale = min(1.0, MAX_IMAGE_WIDTH / width, MAX_IMAGE_HEIGHT / height)
         if scale < 1.0:
             frame = cv2.resize(
                 frame,
@@ -153,13 +162,16 @@ def capture_webcam_image(device_index: int = 0) -> str:
                 interpolation=cv2.INTER_AREA,
             )
         encoded, image = cv2.imencode(
-            ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85]
+            ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
         )
         if not encoded:
             return "Camera frame could not be encoded; no image was sent."
         image_bytes = image.tobytes()
         if len(image_bytes) > MAX_CAPTURED_IMAGE_BYTES:
-            return "Captured image exceeded the 2 MiB safety limit."
+            return (
+                f"Captured image exceeded the {MAX_CAPTURED_IMAGE_BYTES}-byte "
+                "safety limit."
+            )
         reference = uuid.uuid4().hex
         _captured_images[reference] = image_bytes
         return (
@@ -175,7 +187,7 @@ def capture_webcam_image(device_index: int = 0) -> str:
 
 @tool(args_schema=MicrophoneInput)
 def record_microphone_audio(
-    duration_seconds: float = 5.0,
+    duration_seconds: float = DEFAULT_MICROPHONE_SECONDS,
     device_index: Optional[int] = None,
 ) -> str:
     """Record a short local microphone clip and transcribe it with a configured offline Whisper model."""
@@ -211,8 +223,8 @@ def record_microphone_audio(
     audio = None
     try:
         audio = sd.rec(
-            int(duration_seconds * SAMPLE_RATE),
-            samplerate=SAMPLE_RATE,
+            int(duration_seconds * MICROPHONE_SAMPLE_RATE),
+            samplerate=MICROPHONE_SAMPLE_RATE,
             channels=1,
             dtype="int16",
             device=device_index,
@@ -226,7 +238,7 @@ def record_microphone_audio(
             with wave.open(audio_file, "wb") as wav_file:
                 wav_file.setnchannels(1)
                 wav_file.setsampwidth(2)
-                wav_file.setframerate(SAMPLE_RATE)
+                wav_file.setframerate(MICROPHONE_SAMPLE_RATE)
                 wav_file.writeframes(audio.tobytes())
             audio_file.seek(0)
             model = faster_whisper.WhisperModel(

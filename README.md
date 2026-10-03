@@ -112,15 +112,16 @@ Feature code is grouped into importable packages under `src/`: `tools/`
    ```
 
 The first run creates `~/.private_agent.conf` in the current user's home
-directory, regardless of the installation method or launch directory. The same
-per-user file is used by both `python main.py` and the installed `private-agent`
-command. `resources/skills` is the default
-Markdown skill directory. Configure `rag_docs_path` to enable local document
+directory, regardless of the installation method or launch directory. Older
+flat-format config files are migrated to categorized sections while preserving
+their values. The same per-user file is used by both `python main.py` and the
+installed `private-agent` command. `resources/skills` is the default Markdown
+skill directory. Configure `paths.rag_documents` to enable local document
 indexing; leave it `null` to skip RAG. Conversation history is stored in
 `~/.local_ai_memory.db`, and the Chroma index is stored in
 `./.local_ai_chroma_db`.
 
-Set `"DEBUG_LOG_ENABLED": 1` in `~/.private_agent.conf` to write a trace file for
+Set `"logging": {"debug_enabled": 1}` in `~/.private_agent.conf` to write a trace file for
 each run under `~/.private_agent/logs/`; set it to `0` to disable logging (the
 default). Trace files and their directory are created with owner-only
 permissions. A trace includes rendered agent output and interactive prompt
@@ -170,17 +171,17 @@ explicit read-only runtime mounts, access the host loopback network, or write
 outside the project and temporary filesystem. If the sandbox prerequisites
 are missing, code-task verification is blocked rather than run on the host.
 
-RAG indexing is bounded by `rag_max_file_bytes` (5 MiB per file),
-`rag_max_corpus_bytes` (25 MiB total), `rag_max_pdf_pages` (250 per PDF), and
-`rag_max_documents` (20,000 chunks). The index location is configurable with
-`rag_index_path`. If its state file is corrupt or incompatible, the CLI offers
+RAG indexing is bounded by `rag.max_file_bytes` (5 MiB per file),
+`rag.max_corpus_bytes` (25 MiB total), `rag.max_pdf_pages` (250 per PDF), and
+`rag.max_documents` (20,000 chunks). The index location is configurable with
+`paths.rag_index`. If its state file is corrupt or incompatible, the CLI offers
 to move the old index intact to a timestamped backup before rebuilding.
 
-Conversation context is limited by `max_context_tokens` (12,000 tokens by
+Conversation context is limited by `agent.max_context_tokens` (12,000 tokens by
 default), preserving the newest messages and user request first.
-`conversation_retention_days` defaults to `0` (retention disabled); a positive
+`memory.conversation_retention_days` defaults to `0` (retention disabled); a positive
 value prunes older messages and summaries at startup. Session summaries are
-also capped by `max_summary_chars`. All outbound HTTP for web tools, Ollama,
+also capped by `memory.max_summary_chars`. All outbound HTTP for web tools, Ollama,
 MCP over HTTP, and Online APIs validates DNS answers immediately before
 connecting and connects to the validated IP. Web tools only reach public
 addresses. Explicitly configured Ollama, MCP, and Online endpoints may use
@@ -208,45 +209,134 @@ information after loading a model.
 
 ## Configuration
 
-Example `~/.private_agent.conf`:
+Runtime limits and defaults are grouped by subsystem in
+`~/.private_agent.conf`. Existing flat keys are still accepted for backwards
+compatibility; when the same setting appears in both forms, the categorized
+value takes precedence. The following are the generated defaults:
 
 ```json
 {
-  "default_db_path": "~/.local_ai_memory.db",
-  "workspace_root": ".",
-  "code_output_root": "~/.private_agent/projects",
-  "skills_folder": "resources/skills",
-  "rag_docs_path": null,
-  "rag_index_path": "./.local_ai_chroma_db",
-  "rag_max_file_bytes": 5242880,
-  "rag_max_corpus_bytes": 26214400,
-  "rag_max_pdf_pages": 250,
-  "rag_max_documents": 20000,
-  "max_context_tokens": 12000,
-  "conversation_retention_days": 0,
-  "max_summary_chars": 2000,
-  "max_network_concurrency": 4,
-  "network_request_timeout": 30,
-  "ollama_base_url": "http://localhost:11434",
-  "hardware_acceleration": "auto",
-  "preferred_model": null,
-  "online_base_url": "https://api.openai.com/v1",
-  "online_model": null,
-  "default_model_temperature": 0.3,
-  "embedding_model": "nomic-embed-text",
-  "thinking_toggle_default": false,
-  "thinking_effort_default": "medium",
-  "enable_web_research": true,
-  "web_research_consent": "ask",
-  "max_tool_iterations": 15,
-  "max_tool_calls": 60,
-  "max_task_seconds": 600,
-  "max_tool_output_chars": 12000,
-  "max_history_messages": 20,
-  "mcp_auto_approve_tools": [],
-  "mcpServers": {}
+  "paths": {
+    "database": "~/.local_ai_memory.db",
+    "workspace": ".",
+    "code_output": "~/.private_agent/projects",
+    "skills": "resources/skills",
+    "rag_documents": null,
+    "rag_index": "./.local_ai_chroma_db"
+  },
+  "models": {
+    "ollama_base_url": "http://localhost:11434",
+    "hardware_acceleration": "auto",
+    "preferred_model": null,
+    "online_base_url": "https://api.openai.com/v1",
+    "online_model": null,
+    "temperature": 0.1,
+    "embedding_model": "nomic-embed-text",
+    "thinking_enabled_by_default": false,
+    "thinking_effort": "medium",
+    "online_request_timeout_seconds": 60,
+    "online_model_list_timeout_seconds": 10,
+    "online_max_retries": 1,
+    "online_model_list_limit": 30
+  },
+  "agent": {
+    "permission_mode": "auto",
+    "max_tool_iterations": 15,
+    "max_tool_calls": 60,
+    "max_task_seconds": 600,
+    "max_tool_output_chars": 12000,
+    "max_history_messages": 20,
+    "max_context_tokens": 12000,
+    "max_model_capability_cache_entries": 128,
+    "summary_prompt_sentences": 2,
+    "rag_context_results": 2
+  },
+  "memory": {
+    "conversation_retention_days": 0,
+    "max_summary_chars": 2000,
+    "default_history_messages": 20,
+    "default_episodic_summaries": 5
+  },
+  "rag": {
+    "max_file_bytes": 5242880,
+    "max_corpus_bytes": 26214400,
+    "max_pdf_pages": 250,
+    "max_documents": 20000,
+    "chunk_size_chars": 1200,
+    "chunk_overlap_chars": 200,
+    "similarity_results": 4
+  },
+  "network": {
+    "web_research_enabled": true,
+    "web_research_consent": "ask",
+    "internet_check_host": "1.1.1.1",
+    "internet_check_port": 443,
+    "internet_check_timeout_seconds": 3.0,
+    "max_concurrent_requests": 4,
+    "request_timeout_seconds": 30,
+    "max_stream_timeout_seconds": 600,
+    "max_webpage_bytes": 2097152,
+    "max_download_bytes": 26214400,
+    "max_http_redirects": 5,
+    "max_search_query_chars": 2000,
+    "max_search_results": 3,
+    "max_fetched_webpage_chars": 12000
+  },
+  "tools": {
+    "max_read_file_bytes": 1048576,
+    "file_read_chunk_bytes": 65536,
+    "binary_probe_bytes": 2048,
+    "shell_command_timeout_seconds": 30,
+    "default_history_read_limit": 20
+  },
+  "media": {
+    "max_captured_image_bytes": 2097152,
+    "max_images_per_turn": 3,
+    "max_microphone_seconds": 30,
+    "default_microphone_seconds": 5.0,
+    "microphone_sample_rate": 16000,
+    "default_camera_device_index": 0,
+    "max_camera_device_index": 32,
+    "max_microphone_device_index": 128,
+    "max_image_width": 1280,
+    "max_image_height": 720,
+    "jpeg_quality": 85
+  },
+  "skills": {
+    "max_name_chars": 64,
+    "max_description_chars": 500,
+    "max_instruction_chars": 20000,
+    "max_iterations": 15,
+    "description_preview_chars": 100,
+    "relevance_threshold": 1.5,
+    "relevance_exact_match_score": 3.0,
+    "relevance_prefix_match_score": 2.0,
+    "relevance_word_match_score": 1.0
+  },
+  "code_tasks": {
+    "git_command_timeout_seconds": 30,
+    "test_command_timeout_seconds": 180,
+    "successful_test_output_chars": 6000,
+    "failed_test_output_chars": 3000
+  },
+  "logging": {
+    "debug_enabled": 0
+  },
+  "mcp": {
+    "auto_approve_tools": [],
+    "servers": {}
+  }
 }
 ```
+
+Settings are read at process startup; restart `private-agent` after changing
+them. Existing settings are retained when the legacy flat config is migrated.
+For example, raise the file-reader size limit by editing
+`"tools": {"max_read_file_bytes": 10485760}` (10 MiB). This is independent of
+`agent.max_tool_output_chars`, which separately limits how much tool output is
+passed back to the model. Security invariants such as workspace path checks,
+network address validation, and OS sandbox resource ceilings are intentionally
+not user-configurable.
 
 The same runtime dependencies are listed in `requirements.txt`. Install test
 and lint dependencies with `python -m pip install -e ".[dev]"`.
@@ -259,22 +349,24 @@ uses Ollama model metadata to identify declared tool, thinking, vision, and
 audio support; unsupported features are not silently assumed.
 
 MCP server entries use the configuration format expected by
-`langchain-mcp-adapters`. For example, a local stdio server may be configured
-as:
+`langchain-mcp-adapters`; configure them under `mcp.servers`. For example, a
+local stdio server may be configured as:
 
 ```json
 {
-  "mcpServers": {
-    "example": {
-      "transport": "stdio",
-      "command": "python",
-      "args": ["-m", "example_mcp_server"]
+  "mcp": {
+    "servers": {
+      "example": {
+        "transport": "stdio",
+        "command": "python",
+        "args": ["-m", "example_mcp_server"]
+      }
     }
   }
 }
 ```
 
-Only configure servers you trust. Tool names in `mcp_auto_approve_tools`
+Only configure servers you trust. Tool names in `mcp.auto_approve_tools`
 persistently bypass the per-call interactive approval prompt; leave this list
 empty unless the server and the named tools have been reviewed. Stdio servers
 must be installed in the application/runtime locations mounted read-only into

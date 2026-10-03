@@ -48,6 +48,14 @@ from .config import (
     WEB_RESEARCH_CONSENT,
     THINKING_TOGGLE_DEFAULT,
     THINKING_EFFORT_DEFAULT,
+    INTERNET_CHECK_TIMEOUT,
+    ONLINE_REQUEST_TIMEOUT,
+    ONLINE_MODEL_LIST_TIMEOUT,
+    ONLINE_MAX_RETRIES,
+    ONLINE_MODEL_LIST_LIMIT,
+    MAX_MODEL_CAPABILITY_CACHE_ENTRIES,
+    RAG_CONTEXT_RESULTS,
+    SUMMARY_PROMPT_SENTENCES,
     MCP_SERVERS,
     MCP_AUTO_APPROVE_TOOLS,
 )
@@ -173,7 +181,7 @@ def inspect_model_capabilities(model_name: str) -> Dict[str, Optional[bool]]:
         model_info = _response_field(details, "modelinfo", {}) or {}
         raw_capabilities = model_info.get("capabilities", []) if isinstance(model_info, dict) else []
     if not raw_capabilities:
-        if len(_MODEL_CAPABILITIES_CACHE) >= 128:
+        if len(_MODEL_CAPABILITIES_CACHE) >= MAX_MODEL_CAPABILITY_CACHE_ENTRIES:
             _MODEL_CAPABILITIES_CACHE.clear()
         _MODEL_CAPABILITIES_CACHE[cache_key] = result.copy()
         return result
@@ -191,7 +199,7 @@ def inspect_model_capabilities(model_name: str) -> Dict[str, Optional[bool]]:
         vision="vision" in names,
         audio="audio" in names,
     )
-    if len(_MODEL_CAPABILITIES_CACHE) >= 128:
+    if len(_MODEL_CAPABILITIES_CACHE) >= MAX_MODEL_CAPABILITY_CACHE_ENTRIES:
         _MODEL_CAPABILITIES_CACHE.clear()
     _MODEL_CAPABILITIES_CACHE[cache_key] = result.copy()
     return result
@@ -288,17 +296,55 @@ def _validate_online_base_url(base_url: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
+def _online_request_failure(exc: Exception) -> str:
+    """Describe provider HTTP failures without exposing response bodies or credentials."""
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+    try:
+        status_code = int(status_code)
+    except (TypeError, ValueError):
+        status_code = None
+    if status_code is None:
+        return (
+            f"Online request failed ({type(exc).__name__}); check connectivity, "
+            "endpoint, model, and credentials. Provider response details were not logged."
+        )
+
+    explanations = {
+        400: "the provider rejected the request; the model or request format may be unsupported",
+        401: "the provider rejected authentication; verify the API key",
+        403: "the provider denied access to this model or account",
+        404: "the endpoint or model was not found",
+        408: "the provider timed out processing the request",
+        413: "the request exceeded the provider's size limit",
+        422: "the provider could not process the request or model parameters",
+        429: "the provider rate limit or account quota was reached",
+    }
+    explanation = explanations.get(
+        status_code,
+        "the provider returned a server error" if status_code >= 500
+        else "the provider rejected the request",
+    )
+    return (
+        f"Online request failed with HTTP {status_code} ({type(exc).__name__}): "
+        f"{explanation}. Check the selected model, provider access, and request compatibility. "
+        "Response bodies and credentials were not logged."
+    )
+
+
 def _make_online_chat_model(base_url: str, model_name: str, api_key: str):
     from langchain_openai import ChatOpenAI
 
     http_client = public_only_sync_client(
         headers={},
-        timeout=60,
+        timeout=ONLINE_REQUEST_TIMEOUT,
         allow_loopback=True,
     )
     http_async_client = _public_only_async_client(
         headers={},
-        timeout=60,
+        timeout=ONLINE_REQUEST_TIMEOUT,
         allow_loopback=True,
         track=True,
     )
@@ -307,8 +353,8 @@ def _make_online_chat_model(base_url: str, model_name: str, api_key: str):
         base_url=base_url,
         api_key=api_key,
         temperature=MODEL_TEMPERATURE,
-        timeout=60,
-        max_retries=1,
+        timeout=ONLINE_REQUEST_TIMEOUT,
+        max_retries=ONLINE_MAX_RETRIES,
         http_client=http_client,
         http_async_client=http_async_client,
     )
@@ -332,7 +378,9 @@ def select_online_model():
 
     parsed_endpoint = urlsplit(base_url)
     endpoint_port = parsed_endpoint.port or (443 if parsed_endpoint.scheme == "https" else 80)
-    while not check_internet_connection(parsed_endpoint.hostname or "", endpoint_port, 3.0):
+    while not check_internet_connection(
+        parsed_endpoint.hostname or "", endpoint_port, INTERNET_CHECK_TIMEOUT
+    ):
         choice = console.input(
             "[yellow]The selected API endpoint is not reachable. Restore access and "
             "retry (r), or return to local model selection (l)? [/yellow]"
@@ -342,7 +390,7 @@ def select_online_model():
 
     host = urlsplit(base_url).netloc
     if console.input(
-        f"[yellow]Online mode will send requests to {host}. Continue? [y/N]: [/yellow]"
+        f"[yellow]Online mode will send requests to {host}. Continue? \\[y/N]: [/yellow]"
     ).strip().lower() != "y":
         return None
 
@@ -356,7 +404,7 @@ def select_online_model():
         import httpx
         with public_only_sync_client(
             headers={"Authorization": "Bearer " + api_key},
-            timeout=10,
+            timeout=ONLINE_MODEL_LIST_TIMEOUT,
             allow_loopback=True,
         ) as client:
             response = client.get(f"{base_url}/models")
@@ -386,11 +434,15 @@ def select_online_model():
     configured_model = str(APP_CONFIG.get("online_model") or "")
     if model_choices:
         console.print("[bold]Available API models:[/bold]")
-        for index, candidate in enumerate(model_choices[:30], 1):
+        for index, candidate in enumerate(
+            model_choices[:ONLINE_MODEL_LIST_LIMIT], 1
+        ):
             console.print(f"  [cyan]{index}.[/cyan] {candidate}")
         default_model = configured_model if configured_model in model_choices else model_choices[0]
         model_input = console.input(f"[cyan]Select model number or enter ID [{default_model}]: [/cyan]").strip()
-        if model_input.isdigit() and 1 <= int(model_input) <= min(30, len(model_choices)):
+        if model_input.isdigit() and 1 <= int(model_input) <= min(
+            ONLINE_MODEL_LIST_LIMIT, len(model_choices)
+        ):
             model_name = model_choices[int(model_input) - 1]
         else:
             model_name = model_input or default_model
@@ -409,11 +461,11 @@ def select_online_model():
     )
     share_context = console.input(
         "[yellow]Allow this online model to receive local history and retrieved "
-        "RAG context for this session? [y/N]: [/yellow]"
+        "RAG context for this session? \\[y/N]: [/yellow]"
     ).strip().lower() == "y"
     allow_tools = console.input(
         "[yellow]Allow this online model to call local/MCP tools? Their arguments "
-        "and results will be sent to the provider. [y/N]: [/yellow]"
+        "and results will be sent to the provider. \\[y/N]: [/yellow]"
     ).strip().lower() == "y"
 
     try:
@@ -615,7 +667,7 @@ async def authorize_network_research(
         )
         choice = console.input(
             f"[yellow]'{tool_name}' will send this to an external service: "
-            f"{request_summary}\nProceed? [y/N]: [/yellow]"
+            f"{request_summary}\nProceed? \\[y/N]: [/yellow]"
         ).strip().lower()
         if choice != "y":
             return False, "Online research was not approved; use offline evidence only."
@@ -740,7 +792,11 @@ def _get_tokenizer():
         return None
 
 
-def estimate_context_window(chat_history: list, current_input: str, max_context: int = 32768) -> dict:
+def estimate_context_window(
+    chat_history: list,
+    current_input: str,
+    max_context: int = MAX_CONTEXT_TOKENS,
+) -> dict:
     total_chars = len(current_input)
     for msg in chat_history:
         content = msg.content
@@ -954,7 +1010,7 @@ async def execute_tool_call(
             description = getattr(tool_func, "description", "") if tool_func else ""
             approval = console.input(
                 f"[yellow]Approve tool '{name}'? {description}\n"
-                f"Arguments: {safe_args}\nRun? [y/N]: [/yellow]"
+                f"Arguments: {safe_args}\nRun? \\[y/N]: [/yellow]"
             ).strip().lower()
             if approval != "y":
                 result = "Error: Tool invocation was declined; no action was taken."
@@ -1132,7 +1188,7 @@ async def _run_agent_cli_session():
     latest_session_id = memory.get_latest_session_id()
     if latest_session_id and sys.stdin.isatty():
         resume = console.input(
-            f"[cyan]Resume latest session '{latest_session_id}'? [Y/n]: [/cyan]"
+            f"[cyan]Resume latest session '{latest_session_id}'? \\[Y/n]: [/cyan]"
         ).strip().lower()
         session_id = latest_session_id if resume in {"", "y", "yes"} else f"session_{uuid.uuid4().hex}"
     else:
@@ -1409,7 +1465,11 @@ async def _run_agent_cli_session():
                     console.print("\n[cyan][Info] Summarizing session and shutting down...[/cyan]")
                     if chat_history:
                         try:
-                            summary_prompt = "Summarize the key technical takeaways, code solutions, and user preferences from this session in 2 sentences."
+                            summary_prompt = (
+                                "Summarize the key technical takeaways, code solutions, "
+                                f"and user preferences from this session in "
+                                f"{SUMMARY_PROMPT_SENTENCES} sentences."
+                            )
                             summary_res = (
                                 await llm.ainvoke(
                                     chat_history + [HumanMessage(content=summary_prompt)]
@@ -1547,7 +1607,7 @@ async def _run_agent_cli_session():
                         relevant_docs = await asyncio.to_thread(
                             vectorstore.similarity_search,
                             user_input,
-                            k=2,
+                            k=RAG_CONTEXT_RESULTS,
                         )
                         if relevant_docs:
                             retrieved_citations = format_retrieved_citations(
@@ -1653,10 +1713,7 @@ Runtime budget: at most {tool_iteration_limit} tool rounds, {MAX_TOOL_CALLS} too
                     ) if tool_unsupported and provider_type == "local" else None
                     if fallback_model is None:
                         if provider_type == "online":
-                            raise RuntimeError(
-                                f"Online request failed ({type(e).__name__}); check connectivity, "
-                                "endpoint, model, and credentials. Provider details were redacted."
-                            ) from None
+                            raise RuntimeError(_online_request_failure(e)) from None
                         raise RuntimeError(f"Local model request failed: {e}") from e
                     console.print(
                         f"[yellow][Model fallback] {selected_model} rejected tool use; "
@@ -1892,8 +1949,8 @@ Runtime budget: at most {tool_iteration_limit} tool rounds, {MAX_TOOL_CALLS} too
                     except Exception as exc:
                         if provider_type == "online":
                             raise RuntimeError(
-                                f"Online model failed after tool execution ({type(exc).__name__}); "
-                                "provider details were redacted."
+                                "Online model failed after tool execution. "
+                                + _online_request_failure(exc)
                             ) from None
                         raise RuntimeError(f"Model failed after tool execution: {exc}") from exc
 

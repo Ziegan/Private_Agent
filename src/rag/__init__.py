@@ -21,6 +21,9 @@ from ..config import (
     RAG_MAX_DOCUMENTS,
     RAG_MAX_FILE_BYTES,
     RAG_MAX_PDF_PAGES,
+    RAG_CHUNK_SIZE_CHARS,
+    RAG_CHUNK_OVERLAP_CHARS,
+    RAG_SIMILARITY_RESULTS,
 )
 from ..hardware import ollama_acceleration_options
 from ..tools import ollama_langchain_client_kwargs, track_ollama_http_clients
@@ -63,7 +66,9 @@ class HybridRAGRetriever:
         except ImportError:
             console.print("[yellow][Warning] 'rank_bm25' package not found. Falling back to pure vector similarity search.[/yellow]")
 
-    def similarity_search(self, query: str, k: int = 4) -> List[Document]:
+    def similarity_search(
+        self, query: str, k: int = RAG_SIMILARITY_RESULTS
+    ) -> List[Document]:
         vector_results = self.vectorstore.similarity_search(query, k=k)
         
         if not self.bm25 or not self.documents:
@@ -97,7 +102,11 @@ class HybridRAGRetriever:
         return hybrid_results
 
 
-def _split_into_chunks(content: str, chunk_size: int = 1200, overlap: int = 200) -> List[str]:
+def _split_into_chunks(
+    content: str,
+    chunk_size: int = RAG_CHUNK_SIZE_CHARS,
+    overlap: int = RAG_CHUNK_OVERLAP_CHARS,
+) -> List[str]:
     chunks = []
     start = 0
     while start < len(content):
