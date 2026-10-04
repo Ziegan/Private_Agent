@@ -392,12 +392,33 @@ def select_online_model(
         "base_url": base_url,
         "share_context": share_context,
         "allow_tools": allow_tools,
-        "capabilities": {
-            "tools": None if allow_tools else False,
-            "function_calls": None if allow_tools else False,
-            "structured_output": None,
-            "thinking": None,
-            "vision": None,
-            "audio": None,
-        },
+        "capabilities": online_capabilities(model, allow_tools),
+    }
+
+
+def online_capabilities(model, allow_tools: bool) -> dict:
+    """Provider-neutral capabilities from LangChain's model profile.
+
+    The profile is keyed by model id, not by endpoint, so it works for any
+    OpenAI-compatible provider whose model id is recognised. Missing or
+    unrecognised data stays None (unknown) rather than being guessed.
+    """
+    try:
+        profile = getattr(model, "profile", None)
+    except Exception:
+        profile = None
+    profile = profile if isinstance(profile, dict) else {}
+
+    def declared(key):
+        value = profile.get(key)
+        return value if isinstance(value, bool) else None
+
+    tool_calling = declared("tool_calling")
+    return {
+        "tools": False if not allow_tools else tool_calling,
+        "function_calls": False if not allow_tools else tool_calling,
+        "structured_output": declared("structured_output"),
+        "thinking": declared("reasoning_output"),
+        "vision": declared("image_inputs"),
+        "audio": declared("audio_inputs"),
     }
