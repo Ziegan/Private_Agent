@@ -1,4 +1,5 @@
 import sys
+import importlib.util
 import time
 import asyncio
 import inspect
@@ -3481,12 +3482,26 @@ async def _run_agent_cli_session():
                     "(model lacks vision support)"
                 )
             )
-            console.print(
-                "[yellow][Local media][/yellow] "
-                f"{webcam_status}; microphone transcription requires optional media "
-                "packages and a local Whisper model; workspace PCM WAV transcription "
-                "is local-only and requires per-use approval."
-            )
+            missing_media = [
+                package
+                for package, module in (
+                    ("opencv-python-headless", "cv2"),
+                    ("Pillow", "PIL"),
+                    ("sounddevice", "sounddevice"),
+                    ("faster-whisper", "faster_whisper"),
+                )
+                if importlib.util.find_spec(module) is None
+            ]
+            if missing_media:
+                console.print(
+                    "[yellow][Local media][/yellow] "
+                    f"{webcam_status}; optional media packages missing "
+                    f"({', '.join(missing_media)}); install with "
+                    "`pip install \".[media]\"`. Workspace PCM WAV transcription "
+                    "is local-only and requires per-use approval."
+                )
+            elif capabilities["vision"] is not True:
+                console.print(f"[yellow][Local media][/yellow] {webcam_status}.")
         console.print(
             "[cyan][Capabilities][/cyan] "
             + ", ".join(
