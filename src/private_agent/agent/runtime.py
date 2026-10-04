@@ -3136,13 +3136,18 @@ async def _run_agent_cli_session():
             "Review and verify them before retrying."
         )
     _offer_local_data_reset(memory)
-    console.print(
-        f"[cyan][SQLite memory][/cyan] File: {memory.db_path}; "
-        f"{memory.count_conversation_messages()} saved conversation message(s) "
-        f"across {memory.count_conversation_sessions()} session(s); "
-        f"{memory.count_episodic_memories()} episodic summary/summaries; "
-        f"{memory.count_registered_skill_files()} session-linked skill file(s)."
-    )
+    saved_messages = memory.count_conversation_messages()
+    saved_sessions = memory.count_conversation_sessions()
+    saved_episodes = memory.count_episodic_memories()
+    saved_skill_files = memory.count_registered_skill_files()
+    if any((saved_messages, saved_sessions, saved_episodes, saved_skill_files)):
+        console.print(
+            f"[cyan][SQLite memory][/cyan] File: {memory.db_path}; "
+            f"{saved_messages} saved conversation message(s) "
+            f"across {saved_sessions} session(s); "
+            f"{saved_episodes} episodic summary/summaries; "
+            f"{saved_skill_files} session-linked skill file(s)."
+        )
     stale_task_ids = memory.mark_stale_tasks(TASK_STALE_AFTER_DAYS)
     if stale_task_ids:
         console.print(
@@ -3151,12 +3156,13 @@ async def _run_agent_cli_session():
             "old approvals. Nothing was deleted."
         )
     task_plans, approved_task_plans = memory.count_task_plans()
-    console.print(
-        "[cyan][Saved plans][/cyan] "
-        f"{task_plans} total | {approved_task_plans} approved | "
-        f"{task_plans - approved_task_plans} not approved — "
-        "use `/tasks` to review or proceed."
-    )
+    if task_plans:
+        console.print(
+            "[cyan][Saved plans][/cyan] "
+            f"{task_plans} total | {approved_task_plans} approved | "
+            f"{task_plans - approved_task_plans} not approved — "
+            "use `/tasks` to review or proceed."
+        )
     set_active_db_path(DEFAULT_DB_PATH)
     for server_name, server_config in MCP_SERVERS.items():
         if (
@@ -3542,14 +3548,18 @@ async def _run_agent_cli_session():
 
         try:
             while True:
-                user_input = (
-                    await prompt_user_input(
-                        console,
-                        SandboxManager.root_dir,
-                        prompt_message="User: ",
-                        skills=loaded_skills,
-                    )
-                ).strip()
+                try:
+                    user_input = (
+                        await prompt_user_input(
+                            console,
+                            SandboxManager.root_dir,
+                            prompt_message="User: ",
+                            skills=loaded_skills,
+                        )
+                    ).strip()
+                except (KeyboardInterrupt, EOFError, asyncio.CancelledError):
+                    _acknowledge_interrupt()
+                    user_input = "exit"
                 if user_input.lower() == "/help":
                     console.print(_format_interactive_help())
                     continue
@@ -3756,85 +3766,9 @@ async def _run_agent_cli_session():
                     )
                     continue
                 if user_input.lower() == "exit":
-                    console.print("\n[cyan][Info] Summarizing session and shutting down...[/cyan]")
-                    if chat_history:
-                        try:
-                            summary_schema = memory.get_table_schema("chat_history")
-                            summary_limit = MAX_SUMMARY_CHARS
-                            summary_prompt = (
-                                "Summarize the key technical takeaways, code solutions, "
-                                "and user preferences from this session. Do not include "
-                                "secrets, credentials, unnecessary private details, or "
-                                "raw tool output. The destination is SQLite table "
-                                "chat_history, column content for role=summary. Use the "
-                                "provided table schema and application content budget; "
-                                f"the summary must be at most {summary_limit} characters. "
-                                f"Prefer approximately {SUMMARY_PROMPT_SENTENCES} "
-                                "sentences when that fits. Preserve key meaning rather "
-                                "than truncating text."
-                            )
-                            summary_messages = [
-                                SystemMessage(
-                                    content=(
-                                        "Prepare one meaning-preserving episodic "
-                                        "summary value that fits the SQLite destination. "
-                                        "Schema metadata and limits:\n"
-                                        + json.dumps(
-                                            {
-                                                "schema": summary_schema,
-                                                "application_limit_characters":
-                                                    summary_limit,
-                                            },
-                                            ensure_ascii=False,
-                                        )
-                                    )
-                                )
-                            ] + chat_history + [
-                                HumanMessage(content=summary_prompt)
-                            ]
-                            summary_res = await llm.ainvoke(summary_messages)
-                            summary_text = str(summary_res.content).strip()
-                            if len(summary_text) > summary_limit:
-                                summary_res = await llm.ainvoke(
-                                    [
-                                        SystemMessage(
-                                            content=(
-                                                "Semantically summarize the provided "
-                                                "candidate for the exact SQLite schema "
-                                                "budget below. Do not slice or merely "
-                                                "remove its ending. Return only the "
-                                                "revised summary value.\n"
-                                                + json.dumps(
-                                                    {
-                                                        "schema": summary_schema,
-                                                        "maximum_characters":
-                                                            summary_limit,
-                                                    },
-                                                    ensure_ascii=False,
-                                                )
-                                            )
-                                        ),
-                                        HumanMessage(content=summary_text),
-                                    ]
-                                )
-                                summary_text = str(summary_res.content).strip()
-                            memory.save_summary(session_id, summary_text)
-                        except Exception as exc:
-                            error_detail = (
-                                type(exc).__name__
-                                if provider_type == "online"
-                                else str(exc)
-                            )
-                            console.print(
-                                f"[yellow][Memory warning] Could not summarize session: "
-                                f"{error_detail}[/yellow]"
-                            )
-                    else:
-                        console.print(
-                            "[cyan][Memory][/cyan] No chat history was available "
-                            "to summarize; slash commands such as /maintenance "
-                            "are not stored as episodic memories."
-                        )
+                    await _summarize_and_save_session(
+                        console, memory, llm, session_id, chat_history, provider_type
+                    )
                     return
                 if user_input.lower() == "switch":
                     console.print("[cyan][Info] Returning to model selection...[/cyan]")
@@ -4851,6 +4785,13 @@ Runtime context:
                 chat_history.append(AIMessage(content=full_output_content))
                 chat_history = chat_history[-MAX_HISTORY_MESSAGES:]
 
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            cleanup_code_task(finalize=False)
+            _acknowledge_interrupt()
+            await _summarize_and_save_session(
+                console, memory, llm, session_id, chat_history, provider_type
+            )
+            return
         except RuntimeError as rte:
             cleanup_code_task(finalize=False)
             console.print(f"\n[red][Exception] {str(rte)}[/red]")
@@ -4864,6 +4805,113 @@ Runtime context:
         if model_selection_failed:
             continue
         break
+
+
+async def _summarize_and_save_session(
+    console_obj,
+    memory: PersistentMemory,
+    llm,
+    session_id: str,
+    chat_history: list,
+    provider_type: str,
+) -> None:
+    """Summarize the session into SQLite with concise stage output.
+
+    A further Ctrl+C while this runs skips the summary instead of exiting
+    with a traceback.
+    """
+    if not chat_history:
+        console_obj.print(
+            "[cyan][Memory][/cyan] No chat history was available "
+            "to summarize; slash commands such as /maintenance "
+            "are not stored as episodic memories."
+        )
+        return
+    console_obj.print(
+        "\n[cyan][Info] Summarizing session before exit "
+        "(press Ctrl+C again to skip)...[/cyan]"
+    )
+    try:
+        console_obj.print("[cyan][Summary 1/3][/cyan] Preparing session context...")
+        summary_schema = memory.get_table_schema("chat_history")
+        summary_limit = MAX_SUMMARY_CHARS
+        summary_prompt = (
+            "Summarize the key technical takeaways, code solutions, "
+            "and user preferences from this session. Do not include "
+            "secrets, credentials, unnecessary private details, or "
+            "raw tool output. The destination is SQLite table "
+            "chat_history, column content for role=summary. Use the "
+            "provided table schema and application content budget; "
+            f"the summary must be at most {summary_limit} characters. "
+            f"Prefer approximately {SUMMARY_PROMPT_SENTENCES} "
+            "sentences when that fits. Preserve key meaning rather "
+            "than truncating text."
+        )
+        summary_messages = [
+            SystemMessage(
+                content=(
+                    "Prepare one meaning-preserving episodic "
+                    "summary value that fits the SQLite destination. "
+                    "Schema metadata and limits:\n"
+                    + json.dumps(
+                        {
+                            "schema": summary_schema,
+                            "application_limit_characters": summary_limit,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            )
+        ] + chat_history + [HumanMessage(content=summary_prompt)]
+        console_obj.print(
+            "[cyan][Summary 2/3][/cyan] Model is summarizing the session..."
+        )
+        summary_res = await llm.ainvoke(summary_messages)
+        summary_text = str(summary_res.content).strip()
+        if len(summary_text) > summary_limit:
+            summary_res = await llm.ainvoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "Semantically summarize the provided "
+                            "candidate for the exact SQLite schema "
+                            "budget below. Do not slice or merely "
+                            "remove its ending. Return only the "
+                            "revised summary value.\n"
+                            + json.dumps(
+                                {
+                                    "schema": summary_schema,
+                                    "maximum_characters": summary_limit,
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                    ),
+                    HumanMessage(content=summary_text),
+                ]
+            )
+            summary_text = str(summary_res.content).strip()
+        console_obj.print("[cyan][Summary 3/3][/cyan] Saving summary to SQLite...")
+        memory.save_summary(session_id, summary_text)
+        console_obj.print("[green][Summary][/green] Saved to SQLite memory.")
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        console_obj.print(
+            "[yellow][Summary] Skipped; exiting without saving a summary.[/yellow]"
+        )
+    except Exception as exc:
+        error_detail = type(exc).__name__ if provider_type == "online" else str(exc)
+        console_obj.print(
+            f"[yellow][Memory warning] Could not summarize session: "
+            f"{error_detail}[/yellow]"
+        )
+
+
+def _acknowledge_interrupt() -> None:
+    task = asyncio.current_task()
+    if task is not None:
+        while task.cancelling():
+            task.uncancel()
+    console.print("\n[yellow][Info] Ctrl+C received; ending session.[/yellow]")
 
 
 async def run_agent_cli_async():

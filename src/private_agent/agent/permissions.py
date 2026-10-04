@@ -177,11 +177,14 @@ async def authorize_network_research(
     if consent_policy == "never":
         return False, "Online research is disabled by the configured consent policy."
     session_consent_state = session_consent_state if session_consent_state is not None else {}
+    # Full mode already approves every tool call for the session.
+    full_mode = permission_mode == "full"
     needs_session_consent = (
-        consent_policy == "session"
+        not full_mode
+        and consent_policy == "session"
         and not session_consent_state.get("granted", False)
     )
-    needs_per_request_consent = consent_policy == "ask"
+    needs_per_request_consent = not full_mode and consent_policy == "ask"
     if needs_session_consent or needs_per_request_consent:
         if not is_interactive():
             return False, "Online search requires interactive user consent."

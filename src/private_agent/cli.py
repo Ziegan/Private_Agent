@@ -12,6 +12,7 @@ def main():
         description="Run the local-first Private Agent CLI.",
     ).parse_args()
     originals = []
+    exit_code = 0
     from .config import DEBUG_LOG_ENABLED
     from .run_logging import (
         LoggingConsoleAdapter,
@@ -43,6 +44,7 @@ def main():
     except RuntimeError as exc:
         RUN_LOGGER.exception("Application startup failed")
         console.print(f"[red][Startup error] {exc}[/red]")
+        exit_code = 1
     except Exception:
         RUN_LOGGER.exception("Application terminated unexpectedly")
         raise
@@ -54,6 +56,8 @@ def main():
             restore_logging_consoles(originals)
         stop_debug_logging()
         console.print("[cyan][Info] Goodbye.[/cyan]")
+    if exit_code:
+        raise SystemExit(exit_code)
 
 if __name__ == "__main__":
     main()

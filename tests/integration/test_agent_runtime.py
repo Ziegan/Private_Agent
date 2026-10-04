@@ -748,7 +748,7 @@ async def test_offline_research_can_continue_with_incomplete_data():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("permission_mode", ["auto", "full"])
+@pytest.mark.parametrize("permission_mode", ["auto", "monitored"])
 async def test_web_research_ask_policy_prompts_outside_manual_mode(
     permission_mode,
 ):
@@ -771,6 +771,26 @@ async def test_web_research_ask_policy_prompts_outside_manual_mode(
     assert message == ""
     console.input.assert_called_once()
     assert "weather today" in console.input.call_args.args[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy", ["ask", "session"])
+async def test_full_permission_mode_skips_web_consent_prompt(policy):
+    from private_agent.agent.permissions import authorize_network_research as authorize
+
+    console = MagicMock()
+    allowed, _ = await authorize(
+        "web_search",
+        {"query": "weather today"},
+        permission_mode="full",
+        enabled=True,
+        consent_policy=policy,
+        internet_check=lambda: True,
+        console=console,
+        is_interactive=lambda: True,
+    )
+    assert allowed is True
+    console.input.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -3617,3 +3637,54 @@ def test_model_capabilities_are_read_from_ollama_metadata(mock_client):
     assert cached_capabilities["tools"] is True
     mock_client.assert_called_once()
     agent._MODEL_CAPABILITIES_CACHE.clear()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_summary_reports_stages_and_saves(tmp_path):
+    import io
+
+    import private_agent.agent.runtime as agent
+    from langchain_core.messages import AIMessage, HumanMessage
+    from rich.console import Console
+
+    memory = PersistentMemory(db_path=str(tmp_path / "memory.sqlite"))
+    memory.save_message("s1", "human", "hello")
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(return_value=types.SimpleNamespace(content="short"))
+    out = io.StringIO()
+    await agent._summarize_and_save_session(
+        Console(file=out, width=200),
+        memory,
+        llm,
+        "s1",
+        [HumanMessage(content="hello"), AIMessage(content="hi")],
+        "local",
+    )
+    text = out.getvalue()
+    assert "Summary 1/3" in text and "Summary 3/3" in text and "Saved" in text
+    assert memory.get_all_episodic_summaries(session_id="s1") == ["short"]
+
+
+@pytest.mark.asyncio
+async def test_second_interrupt_skips_summary(tmp_path):
+    import io
+
+    import private_agent.agent.runtime as agent
+    from langchain_core.messages import HumanMessage
+    from rich.console import Console
+
+    memory = PersistentMemory(db_path=str(tmp_path / "memory.sqlite"))
+    memory.save_message("s1", "human", "hello")
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(side_effect=KeyboardInterrupt)
+    out = io.StringIO()
+    await agent._summarize_and_save_session(
+        Console(file=out, width=200),
+        memory,
+        llm,
+        "s1",
+        [HumanMessage(content="hello")],
+        "local",
+    )
+    assert "Skipped" in out.getvalue()
+    assert memory.get_all_episodic_summaries(session_id="s1") == []
