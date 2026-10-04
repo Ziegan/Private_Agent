@@ -12,3 +12,4 @@ dist/
 *.egg-info/
 IMPLEMENTATION_PLAN.md
 RESTRUCTRE.md
+uv.lock
