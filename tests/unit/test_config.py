@@ -1,6 +1,7 @@
 import json
 import pathlib
 import stat
+from unittest.mock import MagicMock
 import pytest
 
 from private_agent.config import load_or_create_config
@@ -287,3 +288,53 @@ def test_logging_console_adapter_installs_and_restores_module_consoles():
         module.console is original_consoles[module]
         for module in modules
     )
+
+
+def test_debug_log_lines_have_timestamp_level_and_source_file(tmp_path, monkeypatch):
+    import logging
+    import re
+
+    import private_agent.run_logging as run_logging
+
+    monkeypatch.setattr(run_logging, "DEBUG_LOG_ENABLED", True)
+    monkeypatch.setattr(run_logging, "DEBUG_LOG_LEVEL", "DEBUG")
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
+    try:
+        log_path = run_logging.start_debug_logging()
+        logging.getLogger("private_agent.database.memory").warning("module marker")
+        run_logging.RUN_LOGGER.debug("debug marker")
+        adapter = run_logging.LoggingConsoleAdapter(MagicMock())
+        adapter.print("shown to user")
+        run_logging.stop_debug_logging()
+        text = log_path.read_text(encoding="utf-8")
+    finally:
+        run_logging.stop_debug_logging()
+    assert re.search(
+        r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} \| WARNING  \| "
+        r"private_agent\.database\.memory \| test_config\.py:\d+ \| .* \| module marker",
+        text,
+    )
+    assert "DEBUG    | private_agent.run | test_config.py" in text
+    assert "OUTPUT\nshown to user" in text
+    adapter._base.print.assert_called_once_with("shown to user")
+
+
+def test_debug_log_level_filters_and_terminal_stays_clean(tmp_path, monkeypatch, capsys):
+    import logging
+
+    import private_agent.run_logging as run_logging
+
+    monkeypatch.setattr(run_logging, "DEBUG_LOG_ENABLED", True)
+    monkeypatch.setattr(run_logging, "DEBUG_LOG_LEVEL", "WARNING")
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
+    try:
+        log_path = run_logging.start_debug_logging()
+        run_logging.RUN_LOGGER.info("hidden info")
+        logging.getLogger("private_agent.x").error("kept error")
+        run_logging.stop_debug_logging()
+        text = log_path.read_text(encoding="utf-8")
+    finally:
+        run_logging.stop_debug_logging()
+    assert "hidden info" not in text and "kept error" in text
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err == ""

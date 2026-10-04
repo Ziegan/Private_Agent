@@ -17,6 +17,7 @@ from .schemas import (
 @tool(args_schema=ReadSqliteHistoryInput)
 def read_chat_history_from_sqlite(limit: int = DEFAULT_HISTORY_READ_LIMIT) -> str:
     """Read recent conversation entries from persistent SQLite memory."""
+    limit = max(1, min(int(limit), 500))
     try:
         with _sqlite_lock:
             with sqlite3.connect(

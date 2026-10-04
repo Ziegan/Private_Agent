@@ -42,6 +42,7 @@ from ..config import (
     MODEL_TEMPERATURE,
     OLLAMA_BASE_URL,
     HARDWARE_ACCELERATION_MODE,
+    ONLINE_PERMISSION_OVERRIDE,
     PREFERRED_MODEL,
     APP_CONFIG,
     MAX_TOOL_ITERATIONS,
@@ -50,6 +51,9 @@ from ..config import (
     MAX_TOOL_OUTPUT_CHARS,
     MAX_HISTORY_MESSAGES,
     MAX_CONTEXT_TOKENS,
+    CONTEXT_COMPACTION_THRESHOLD,
+    CONTEXT_KEEP_RECENT_MESSAGES,
+    CONTEXT_SUMMARY_CHARS,
     MAX_OUTPUT_TOKENS,
     STREAMING_OUTPUT,
     VISIBILE_REASONING,
@@ -134,6 +138,15 @@ from ..hardware import (
     ollama_acceleration_options,
 )
 from ..run_logging import RUN_LOGGER
+from .compaction import (
+    compact_history,
+    compact_loop_messages,
+    message_text,
+    messages_tokens,
+    needs_history_compaction,
+    summary_system_message,
+)
+from .session_stats import SessionStats, build_stats_table, format_duration
 from .prompts import (
     build_bounded_user_input as _build_bounded_user_input,
     calculate_prompt_budgets,
@@ -172,6 +185,8 @@ console = Console()
 TOOL_RESULT_PREVIEW_CHARS = 500
 _ACTIVE_MEMORY: Optional[PersistentMemory] = None
 _TASK_LEASE_HEARTBEAT: Optional[asyncio.Task] = None
+_SESSION_STATS = SessionStats()
+_SESSION_INFO: dict[str, Any] = {}
 TASK_LEASE_SECONDS = 180
 TASK_LEASE_RENEW_INTERVAL_SECONDS = 30
 OS_ISOLATED_TOOL_NAMES = frozenset({
@@ -265,6 +280,11 @@ def _local_location_refusal(name: str, args: Any, local_session: bool) -> Option
     return None
 
 
+def _device_tools_allowed(provider_type: str) -> bool:
+    """Local-only (location/media) tools: Local provider, or the explicit override."""
+    return provider_type == "local" or ONLINE_PERMISSION_OVERRIDE
+
+
 def _tool_unavailable_reason(
     name: str,
     *,
@@ -278,10 +298,10 @@ def _tool_unavailable_reason(
         not ENABLE_WEB_RESEARCH or WEB_RESEARCH_CONSENT == "never"
     ):
         return "Online research is disabled by configuration."
-    if name in LOCAL_ONLY_NETWORK_TOOL_NAMES and provider_type != "local":
+    if name in LOCAL_ONLY_NETWORK_TOOL_NAMES and not _device_tools_allowed(provider_type):
         return "Current-location lookup requires the Local provider."
     if name in LOCAL_MEDIA_TOOL_NAMES:
-        if provider_type != "local":
+        if not _device_tools_allowed(provider_type):
             return "Local media tools require the Local provider."
         if name in {
             "capture_webcam_image",
@@ -2424,6 +2444,7 @@ def select_online_model():
         model_list_limit=ONLINE_MODEL_LIST_LIMIT,
         public_sync_client=public_only_sync_client,
         model_factory=_make_online_chat_model,
+        permission_override=ONLINE_PERMISSION_OVERRIDE,
     )
 
 
@@ -2554,6 +2575,12 @@ async def _invoke_with_budget(
             elapsed = time.monotonic() - started
             _display_visible_reasoning(aggregate)
             _display_generation_rate(aggregate, elapsed)
+            _SESSION_STATS.record_model_call(
+                messages,
+                aggregate if aggregate is not None else AIMessageChunk(content=""),
+                elapsed,
+                model_name,
+            )
             RUN_LOGGER.info(
                 "TIMING phase=model-invoke mode=stream elapsed=%.3fs first_token_seconds=%s",
                 elapsed,
@@ -2584,6 +2611,7 @@ async def _invoke_with_budget(
     elapsed = time.monotonic() - started
     _display_visible_reasoning(response)
     _display_generation_rate(response, elapsed)
+    _SESSION_STATS.record_model_call(messages, response, elapsed, model_name)
     RUN_LOGGER.info(
         "TIMING phase=model-invoke mode=invoke elapsed=%.3fs",
         elapsed,
@@ -3112,7 +3140,9 @@ async def _execute_task_tool_call(
 
 
 async def _run_agent_cli_session():
-    global _ACTIVE_MEMORY
+    global _ACTIVE_MEMORY, _SESSION_STATS, _SESSION_INFO
+    _SESSION_STATS = SessionStats()
+    _SESSION_INFO = {}
     startup_started = time.monotonic()
     if not sys.stdin.isatty():
         console.print(
@@ -3376,7 +3406,7 @@ async def _run_agent_cli_session():
                 if online_selection["allow_tools"]
                 else []
             )
-            if not online_selection["share_context"]:
+            if not online_selection["share_context"] and not ONLINE_PERMISSION_OVERRIDE:
                 tools_list = [
                     tool for tool in tools_list
                     if tool.name not in {
@@ -3410,7 +3440,17 @@ async def _run_agent_cli_session():
                 continue
             console.print("\n[bold underline]Available Local Chat Models:[/bold underline]")
             for idx, model_name in enumerate(available_models, 1):
-                console.print(f"  [cyan]{idx}.[/cyan] {model_name}")
+                marker = (
+                    " [green](configured, preferred)[/green]"
+                    if PREFERRED_MODEL and model_name == PREFERRED_MODEL
+                    else ""
+                )
+                console.print(f"  [cyan]{idx}.[/cyan] {model_name}{marker}")
+            if PREFERRED_MODEL and PREFERRED_MODEL not in available_models:
+                console.print(
+                    f"[yellow]Configured preferred model '{PREFERRED_MODEL}' is not "
+                    "installed in Ollama.[/yellow]"
+                )
             while True:
                 choice_input = console.input(
                     f"[cyan]Select model choice [1-{len(available_models)}] (Default: 1): [/cyan]"
@@ -3543,6 +3583,24 @@ async def _run_agent_cli_session():
             memory.load_history(session_id, limit=MAX_HISTORY_MESSAGES)
             if include_private_context
             else []
+        )
+        context_summary = ""
+        session_summary_saved = False
+        _SESSION_INFO.update(
+            {
+                "SQL session ID": session_id,
+                "Session mode": re.sub(r"\[/?[^\]]*\]", "", mode_label),
+                "Agent (permission) mode": permission_mode,
+                "Model provider": provider_type,
+                "Model": selected_model,
+                "Thinking": (
+                    f"{'on' if thinking_enabled else 'off'} (effort: {thinking_effort})"
+                ),
+                "Workspace": str(SandboxManager.root_dir),
+                "Local RAG": "active" if is_rag_active else "off",
+                "Skills loaded": len(loaded_skills),
+                "Resumed history messages": len(chat_history),
+            }
         )
         console.print(f"\n[bold green]--- {mode_label} Ready! Type 'exit' or 'switch' ---[/bold green]")
 
@@ -3808,10 +3866,58 @@ async def _run_agent_cli_session():
                         + format_hardware_status(hardware_info)
                     )
                     continue
-                if user_input.lower() == "exit":
-                    await _summarize_and_save_session(
-                        console, memory, llm, session_id, chat_history, provider_type
+                if user_input.lower() == "/summarize":
+                    if session_summary_saved:
+                        console.print(
+                            "[cyan][Memory][/cyan] Nothing new since the last summary."
+                        )
+                    else:
+                        session_summary_saved = await _summarize_and_save_session(
+                            console,
+                            memory,
+                            llm,
+                            session_id,
+                            _history_with_summary(context_summary, chat_history),
+                            provider_type,
+                            reason="on demand",
+                        )
+                    continue
+                if user_input.lower() == "/compact":
+                    if not chat_history:
+                        console.print("[cyan][Context][/cyan] Nothing to compact yet.")
+                        continue
+                    chat_history, context_summary = await compact_history(
+                        llm,
+                        chat_history,
+                        context_summary,
+                        keep_recent=0,
+                        max_chars=CONTEXT_SUMMARY_CHARS,
+                        source_token_limit=max(200, MAX_CONTEXT_TOKENS // 4),
+                        notify=lambda text: console.print(
+                            f"[cyan][Context][/cyan] {text}"
+                        ),
                     )
+                    console.print(
+                        "[green][Context][/green] Compacted into a working summary "
+                        f"({len(context_summary)} chars); {len(chat_history)} message(s) kept verbatim."
+                    )
+                    continue
+                if user_input.lower() == "exit":
+                    if session_summary_saved:
+                        console.print(
+                            "[cyan][Memory][/cyan] Session summary already saved; "
+                            "no new prompts since."
+                        )
+                    else:
+                        await _summarize_and_save_session(
+                            console,
+                            memory,
+                            llm,
+                            session_id,
+                            _history_with_summary(context_summary, chat_history),
+                            provider_type,
+                        )
+                    _print_session_statistics()
                     return
                 if user_input.lower() == "switch":
                     console.print("[cyan][Info] Returning to model selection...[/cyan]")
@@ -4307,10 +4413,36 @@ Runtime context:
                     else MAX_CONTEXT_TOKENS
                 )
                 prompt_budget, output_budget = calculate_prompt_budgets(
-                    system_prompts,
+                    system_prompts + [SystemMessage(content=context_summary)],
                     effective_context,
                     MAX_OUTPUT_TOKENS,
                 )
+                if needs_history_compaction(
+                    chat_history,
+                    messages_tokens([HumanMessage(content=user_input)]),
+                    prompt_budget,
+                    CONTEXT_COMPACTION_THRESHOLD,
+                    MAX_HISTORY_MESSAGES,
+                ):
+                    chat_history, context_summary = await compact_history(
+                        llm,
+                        chat_history,
+                        context_summary,
+                        keep_recent=CONTEXT_KEEP_RECENT_MESSAGES,
+                        max_chars=CONTEXT_SUMMARY_CHARS,
+                        source_token_limit=max(200, prompt_budget // 2),
+                        notify=lambda text: console.print(
+                            f"[cyan][Context][/cyan] {text}"
+                        ),
+                    )
+                summary_message = summary_system_message(context_summary)
+                if summary_message is not None:
+                    system_prompts.append(summary_message)
+                    prompt_budget, output_budget = calculate_prompt_budgets(
+                        system_prompts,
+                        effective_context,
+                        MAX_OUTPUT_TOKENS,
+                    )
                 if prompt_budget < 1:
                     console.print(
                         "[red]The system instructions exceed this model's configured "
@@ -4486,6 +4618,7 @@ Runtime context:
                             )
                             continue
                         tool_call_count += 1
+                        _SESSION_STATS.record_tool_call(str(tool_call.get("name") or "unknown"))
                         network_authorized = False
                         media_capture_authorized = False
                         if planning_only:
@@ -4532,7 +4665,7 @@ Runtime context:
                             )
                             continue
                         if call_name in LOCAL_MEDIA_TOOL_NAMES:
-                            if provider_type != "local":
+                            if not _device_tools_allowed(provider_type):
                                 blocked_tool_messages.append(
                                     ToolMessage(
                                         content=(
@@ -4585,7 +4718,7 @@ Runtime context:
                         location_refusal = _local_location_refusal(
                             call_name,
                             tool_call.get("args", {}),
-                            provider_type == "local",
+                            _device_tools_allowed(provider_type),
                         )
                         if location_refusal:
                             blocked_tool_messages.append(
@@ -4620,7 +4753,7 @@ Runtime context:
                                 ] = str(tool_args.get("query") or "")
                         execution_options = {
                             "network_authorized": network_authorized,
-                            "local_media_allowed": provider_type == "local",
+                            "local_media_allowed": _device_tools_allowed(provider_type),
                             "media_capture_authorized": media_capture_authorized,
                             "vision_supported": capabilities["vision"] is True,
                             "permission_mode": turn_permission_mode,
@@ -4788,6 +4921,16 @@ Runtime context:
                         )
                         break
 
+                    await compact_loop_messages(
+                        llm,
+                        messages,
+                        context_stats["max"],
+                        threshold=CONTEXT_COMPACTION_THRESHOLD,
+                        max_chars=CONTEXT_SUMMARY_CHARS,
+                        notify=lambda text: console.print(
+                            f"[cyan][Context][/cyan] {text}"
+                        ),
+                    )
                     try:
                         response = await _invoke_with_status(
                             llm_with_tools,
@@ -4837,6 +4980,30 @@ Runtime context:
                             status_message="Finalizing response...",
                         )
 
+                if (
+                    not getattr(response, "tool_calls", None)
+                    and not message_text(response).strip()
+                    and any(isinstance(m, ToolMessage) for m in messages)
+                    and deadline > time.monotonic()
+                ):
+                    console.print(
+                        "[cyan][Context][/cyan] The model gave no answer after the tool "
+                        "results; asking it once to answer from them..."
+                    )
+                    response = await _invoke_with_status(
+                        llm,
+                        messages
+                        + [
+                            SystemMessage(
+                                content="Answer the user's request now in plain text, "
+                                "using the tool results above."
+                            )
+                        ],
+                        deadline,
+                        model_name=selected_model,
+                        status_message="Finalizing response...",
+                    )
+
                 elapsed_time = time.monotonic() - start_time
 
                 content = response.content
@@ -4873,14 +5040,24 @@ Runtime context:
 
                 chat_history.append(HumanMessage(content=user_input))
                 chat_history.append(AIMessage(content=full_output_content))
-                chat_history = chat_history[-MAX_HISTORY_MESSAGES:]
+                session_summary_saved = False
+                _SESSION_STATS.turns += 1
+                if CONTEXT_COMPACTION_THRESHOLD <= 0:
+                    chat_history = chat_history[-MAX_HISTORY_MESSAGES:]
 
         except (KeyboardInterrupt, asyncio.CancelledError):
             cleanup_code_task(finalize=False)
             _acknowledge_interrupt()
-            await _summarize_and_save_session(
-                console, memory, llm, session_id, chat_history, provider_type
-            )
+            if not session_summary_saved:
+                await _summarize_and_save_session(
+                    console,
+                    memory,
+                    llm,
+                    session_id,
+                    _history_with_summary(context_summary, chat_history),
+                    provider_type,
+                )
+            _print_session_statistics()
             return
         except RuntimeError as rte:
             cleanup_code_task(finalize=False)
@@ -4897,6 +5074,12 @@ Runtime context:
         break
 
 
+def _history_with_summary(summary: str, history: list) -> list:
+    if not summary:
+        return history
+    return [AIMessage(content=f"[Earlier in this session] {summary}")] + history
+
+
 async def _summarize_and_save_session(
     console_obj,
     memory: PersistentMemory,
@@ -4904,7 +5087,8 @@ async def _summarize_and_save_session(
     session_id: str,
     chat_history: list,
     provider_type: str,
-) -> None:
+    reason: str = "before exit",
+) -> bool:
     """Summarize the session into SQLite with concise stage output.
 
     A further Ctrl+C while this runs skips the summary instead of exiting
@@ -4916,11 +5100,12 @@ async def _summarize_and_save_session(
             "to summarize; slash commands such as /maintenance "
             "are not stored as episodic memories."
         )
-        return
+        return False
     console_obj.print(
-        "\n[cyan][Info] Summarizing session before exit "
+        f"\n[cyan][Info] Summarizing session {reason} "
         "(press Ctrl+C again to skip)...[/cyan]"
     )
+    summary_started = time.monotonic()
     try:
         console_obj.print("[cyan][Summary 1/3][/cyan] Preparing session context...")
         summary_schema = memory.get_table_schema("chat_history")
@@ -4956,10 +5141,14 @@ async def _summarize_and_save_session(
         console_obj.print(
             "[cyan][Summary 2/3][/cyan] Model is summarizing the session..."
         )
+        call_started = time.monotonic()
         summary_res = await llm.ainvoke(summary_messages)
+        _SESSION_STATS.record_model_call(
+            summary_messages, summary_res, time.monotonic() - call_started
+        )
         summary_text = str(summary_res.content).strip()
         if len(summary_text) > summary_limit:
-            summary_res = await llm.ainvoke(
+            shorten_messages = (
                 [
                     SystemMessage(
                         content=(
@@ -4980,13 +5169,27 @@ async def _summarize_and_save_session(
                     HumanMessage(content=summary_text),
                 ]
             )
+            call_started = time.monotonic()
+            summary_res = await llm.ainvoke(shorten_messages)
+            _SESSION_STATS.record_model_call(
+                shorten_messages, summary_res, time.monotonic() - call_started
+            )
             summary_text = str(summary_res.content).strip()
         console_obj.print("[cyan][Summary 3/3][/cyan] Saving summary to SQLite...")
         memory.save_summary(session_id, summary_text)
-        console_obj.print("[green][Summary][/green] Saved to SQLite memory.")
+        elapsed = time.monotonic() - summary_started
+        _SESSION_STATS.summary_seconds += elapsed
+        _SESSION_STATS.summary_tokens += _token_count(summary_text)
+        _SESSION_STATS.summary_saved = True
+        console_obj.print(
+            f"[green][Summary][/green] Saved to SQLite memory "
+            f"({len(summary_text)} chars, ~{_token_count(summary_text)} tokens, "
+            f"{format_duration(elapsed)})."
+        )
+        return True
     except (KeyboardInterrupt, asyncio.CancelledError):
         console_obj.print(
-            "[yellow][Summary] Skipped; exiting without saving a summary.[/yellow]"
+            "[yellow][Summary] Skipped; no summary was saved.[/yellow]"
         )
     except Exception as exc:
         error_detail = type(exc).__name__ if provider_type == "online" else str(exc)
@@ -4994,6 +5197,12 @@ async def _summarize_and_save_session(
             f"[yellow][Memory warning] Could not summarize session: "
             f"{error_detail}[/yellow]"
         )
+    _SESSION_STATS.summary_seconds += time.monotonic() - summary_started
+    return False
+
+
+def _print_session_statistics() -> None:
+    console.print(build_stats_table(_SESSION_STATS, _SESSION_INFO))
 
 
 def _acknowledge_interrupt() -> None:

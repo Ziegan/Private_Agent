@@ -185,7 +185,7 @@ def test_workspace_video_sampling_is_bounded_and_transient(
 
     assert len(references) == 3
     assert capture.read_count == 3
-    assert capture.positions == [0, 2000, 4000]
+    assert capture.positions == [0, 2000, 3500]
     assert capture.released
     assert "not saved" in result
     messages = [captured_image_message(f"video-image:{ref}") for ref in references]

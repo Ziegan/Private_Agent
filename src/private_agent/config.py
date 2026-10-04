@@ -39,6 +39,8 @@ DEFAULT_CONFIG = {
         "preferred_model": None,
         "online_base_url": "https://api.openai.com/v1",
         "online_model": None,
+        "online_api_key": None,
+        "online_permission_override": False,
         "temperature": 0.1,
         "embedding_model": "nomic-embed-text",
         "thinking_enabled_by_default": False,
@@ -59,6 +61,9 @@ DEFAULT_CONFIG = {
         "max_output_tokens": 2048,
         "max_model_capability_cache_entries": 128,
         "summary_prompt_sentences": 2,
+        "context_compaction_threshold": 0.8,
+        "context_keep_recent_messages": 6,
+        "context_summary_chars": 1500,
         "rag_context_results": 2,
         "streaming_output": True,
         "visible_reasoning": False,
@@ -89,6 +94,17 @@ DEFAULT_CONFIG = {
         "similarity_results": 4,
         "sqlite_max_rows_per_table": 5000,
         "auto_refresh_seconds": 30,
+    },
+    "chunking": {
+        "strategy": "character",
+        "chunk_size": None,
+        "chunk_overlap": None,
+        "unit": "chars",
+        "min_chunk_chars": 0,
+        "separators": ["\n\n", "\n", ". ", " "],
+        "semantic_breakpoint_percentile": 90,
+        "semantic_buffer_sentences": 1,
+        "semantic_max_sentences": 2000,
     },
     "network": {
         "web_research_enabled": True,
@@ -148,6 +164,7 @@ DEFAULT_CONFIG = {
     },
     "logging": {
         "debug_enabled": 0,
+        "level": "INFO",
     },
     "mcp": {
         "auto_approve_tools": [],
@@ -452,6 +469,9 @@ def _configured_float(section: str, key: str, default: float) -> float:
 
 MODEL_TEMPERATURE = _configured_float("models", "temperature", 0.1)
 
+ONLINE_PERMISSION_OVERRIDE = _configured_bool(
+    "models", "online_permission_override", False
+)
 EMBEDDING_MODEL = str(APP_CONFIG.get("embedding_model", "nomic-embed-text"))
 RAG_INDEX_PATH = _configured_path(
     APP_CONFIG.get("paths", {}).get("rag_index"),
@@ -526,6 +546,34 @@ RAG_MAX_PDF_PAGES = _positive_int("rag_max_pdf_pages", 250)
 RAG_MAX_DOCUMENTS = _positive_int("rag_max_documents", 20000)
 RAG_CHUNK_SIZE_CHARS = _configured_int("rag", "chunk_size_chars", 1200)
 RAG_CHUNK_OVERLAP_CHARS = _configured_int("rag", "chunk_overlap_chars", 200)
+CHUNKING_STRATEGY = str(
+    APP_CONFIG.get("chunking", {}).get("strategy", "character")
+).strip().lower()
+CHUNKING_UNIT = str(APP_CONFIG.get("chunking", {}).get("unit", "chars")).strip().lower()
+# Unset chunk_size/chunk_overlap fall back to the legacy rag.chunk_* keys.
+CHUNKING_SIZE = _configured_int("chunking", "chunk_size", RAG_CHUNK_SIZE_CHARS)
+CHUNKING_OVERLAP = _configured_nonnegative_int(
+    "chunking", "chunk_overlap", RAG_CHUNK_OVERLAP_CHARS
+)
+CHUNKING_MIN_CHUNK_CHARS = _configured_nonnegative_int("chunking", "min_chunk_chars", 0)
+_raw_separators = APP_CONFIG.get("chunking", {}).get("separators")
+CHUNKING_SEPARATORS = (
+    tuple(_raw_separators)
+    if isinstance(_raw_separators, list)
+    and _raw_separators
+    and all(isinstance(item, str) for item in _raw_separators)
+    else ("\n\n", "\n", ". ", " ")
+)
+CHUNKING_SEMANTIC_PERCENTILE = min(
+    100.0,
+    _configured_float("chunking", "semantic_breakpoint_percentile", 90.0),
+)
+CHUNKING_SEMANTIC_BUFFER = _configured_nonnegative_int(
+    "chunking", "semantic_buffer_sentences", 1
+)
+CHUNKING_SEMANTIC_MAX_SENTENCES = _configured_int(
+    "chunking", "semantic_max_sentences", 2000
+)
 RAG_SIMILARITY_RESULTS = _configured_int("rag", "similarity_results", 4)
 RAG_SQLITE_MAX_ROWS_PER_TABLE = _configured_int(
     "rag", "sqlite_max_rows_per_table", 5000
@@ -578,6 +626,12 @@ if isinstance(_debug_log_enabled, str):
     DEBUG_LOG_ENABLED = _debug_log_enabled.strip() == "1"
 else:
     DEBUG_LOG_ENABLED = _debug_log_enabled == 1 or _debug_log_enabled is True
+
+DEBUG_LOG_LEVEL = str(
+    (APP_CONFIG.get("logging") or {}).get("level", "INFO")
+).strip().upper()
+if DEBUG_LOG_LEVEL not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+    DEBUG_LOG_LEVEL = "INFO"
 
 _raw_mcp = APP_CONFIG.get("mcpServers", {})
 MCP_SERVERS = _raw_mcp if isinstance(_raw_mcp, dict) else {}
@@ -661,6 +715,16 @@ SKILL_RELEVANCE_WORD_MATCH_SCORE = _configured_float(
 )
 RAG_CONTEXT_RESULTS = _configured_int("agent", "rag_context_results", 2)
 SUMMARY_PROMPT_SENTENCES = _configured_int("agent", "summary_prompt_sentences", 2)
+try:
+    CONTEXT_COMPACTION_THRESHOLD = float(
+        APP_CONFIG.get("agent", {}).get("context_compaction_threshold", 0.8)
+    )
+except (AttributeError, TypeError, ValueError):
+    CONTEXT_COMPACTION_THRESHOLD = 0.8
+if not 0 <= CONTEXT_COMPACTION_THRESHOLD <= 1:
+    CONTEXT_COMPACTION_THRESHOLD = 0.8
+CONTEXT_KEEP_RECENT_MESSAGES = _configured_int("agent", "context_keep_recent_messages", 6)
+CONTEXT_SUMMARY_CHARS = _configured_int("agent", "context_summary_chars", 1500)
 CODE_TASK_GIT_TIMEOUT = _configured_int(
     "code_tasks", "git_command_timeout_seconds", 30
 )

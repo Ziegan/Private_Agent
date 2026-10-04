@@ -261,6 +261,7 @@ def select_online_model(
     model_list_limit: int,
     public_sync_client: Callable[..., Any],
     model_factory: Callable[[str, str, str], Any],
+    permission_override: bool = False,
 ) -> Optional[dict]:
     """Collect session-only OpenAI-compatible settings after connectivity check."""
     if not is_interactive():
@@ -270,14 +271,30 @@ def select_online_model(
         return None
 
     configured_url = str(app_config.get("online_base_url", "https://api.openai.com/v1"))
-    base_input = console.input(
-        f"[cyan]OpenAI-compatible API base URL [{configured_url}]: [/cyan]"
-    ).strip()
-    try:
-        base_url = validate_base_url(base_input or configured_url)
-    except ValueError as exc:
-        console.print(f"[red]Invalid endpoint: {exc}[/red]")
-        return None
+    configured_key = str(app_config.get("online_api_key") or "").strip()
+    use_configured = False
+    if configured_key:
+        answer = console.input(
+            f"[cyan]A saved online provider is configured ({configured_url}, API key "
+            "hidden). Use it? [Y/n; n = enter a different URL and key]: [/cyan]"
+        ).strip().lower()
+        use_configured = answer in {"", "y", "yes"}
+
+    if use_configured:
+        try:
+            base_url = validate_base_url(configured_url)
+        except ValueError as exc:
+            console.print(f"[red]Invalid configured endpoint: {exc}[/red]")
+            return None
+    else:
+        base_input = console.input(
+            f"[cyan]OpenAI-compatible API base URL [{configured_url}]: [/cyan]"
+        ).strip()
+        try:
+            base_url = validate_base_url(base_input or configured_url)
+        except ValueError as exc:
+            console.print(f"[red]Invalid endpoint: {exc}[/red]")
+            return None
 
     parsed_endpoint = urlsplit(base_url)
     endpoint_port = parsed_endpoint.port or (
@@ -294,12 +311,12 @@ def select_online_model(
             return None
 
     host = parsed_endpoint.netloc
-    if console.input(
+    if not use_configured and console.input(
         f"[yellow]Online mode will send requests to {host}. Continue? \\[y/N]: [/yellow]"
     ).strip().lower() != "y":
         return None
 
-    api_key = get_api_key(
+    api_key = configured_key if use_configured else get_api_key(
         "API key (input hidden; used for this session only): "
     ).strip()
     if not api_key:
@@ -373,10 +390,19 @@ def select_online_model(
         "[yellow]Allow this online model to receive local history and retrieved "
         "RAG context for this session? \\[y/N]: [/yellow]"
     ).strip().lower() == "y"
-    allow_tools = console.input(
-        "[yellow]Allow this online model to call local/MCP tools? Their arguments "
-        "and results will be sent to the provider. \\[y/N]: [/yellow]"
-    ).strip().lower() == "y"
+    if permission_override:
+        allow_tools = True
+        console.print(
+            "[yellow][Online permission override] All tools (including local-only "
+            "location and media tools) are enabled for this online session; their "
+            "arguments and results are sent to the provider. Workspace and "
+            "permission-mode approvals still apply.[/yellow]"
+        )
+    else:
+        allow_tools = console.input(
+            "[yellow]Allow this online model to call local/MCP tools? Their arguments "
+            "and results will be sent to the provider. \\[y/N]: [/yellow]"
+        ).strip().lower() == "y"
 
     try:
         model = model_factory(base_url, model_name, api_key)

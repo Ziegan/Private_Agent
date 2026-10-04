@@ -289,6 +289,8 @@ def load_workspace_video(file_path: str) -> str:
                     if sample_count == 1
                     else duration * index / (sample_count - 1)
                 )
+                # Seeking exactly to the end yields no frame; stop one frame early.
+                timestamp = max(0.0, min(timestamp, duration - 1 / frames_per_second))
                 capture.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
                 ok, frame = capture.read()
                 if not ok:

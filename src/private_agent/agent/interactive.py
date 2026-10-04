@@ -30,6 +30,8 @@ SLASH_COMMANDS = {
     "/think-effort high": "Set thinking effort to high.",
     "/think-status": "Show requested/effective thinking state.",
     "/hardware-status": "Show local Ollama hardware status.",
+    "/summarize": "Summarize this session now and store it in SQLite memory.",
+    "/compact": "Compact the context window into a short working summary.",
 }
 
 SESSION_COMMANDS = {

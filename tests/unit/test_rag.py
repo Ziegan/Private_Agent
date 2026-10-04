@@ -38,6 +38,7 @@ from private_agent.rag import (
 )
 from private_agent.rag.indexing import (
     _split_into_chunks,
+    ChunkingSettings,
     _read_index_state,
     _write_index_state_atomic,
 )
@@ -98,7 +99,9 @@ def test_retrieved_source_citations_are_independent_of_model_response():
     ]
 
 def test_rag_chunker_splits_long_documents_with_overlap():
-    chunks = _split_into_chunks("x" * 2500, chunk_size=1200, overlap=200)
+    chunks = _split_into_chunks(
+        "x" * 2500, ChunkingSettings(strategy="fixed", chunk_size=1200, chunk_overlap=200)
+    )
     assert len(chunks) == 3
     assert all(chunks)
 
@@ -409,7 +412,10 @@ def test_rag_corrupt_vector_database_can_be_explicitly_preserved_and_rebuilt(
     assert chroma_calls == ["open", "rebuild"]
     assert len(backups) == 1
     assert (backups[0] / "chroma.sqlite3").read_text(encoding="utf-8") == "corrupt bytes"
-    assert _read_index_state(index / ".index_state.json") == {
+    recorded = _read_index_state(index / ".index_state.json")
+    for fingerprint in recorded.values():
+        assert fingerprint.pop("chunking")
+    assert recorded == {
         str(source.resolve()): {
             "mtime_ns": source.stat().st_mtime_ns,
             "size": source.stat().st_size,

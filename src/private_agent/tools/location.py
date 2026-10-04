@@ -192,9 +192,13 @@ def format_weather(
     times = daily.get("time") or []
     if not times:
         return "No weather data was returned for that date range."
-    kind = "history" if last < today else "forecast" if first > today else "weather"
+    kind = (
+        "Weather history" if last < today
+        else "Weather forecast" if first > today
+        else "Weather"
+    )
     lines = [
-        f"Weather {kind} for {_describe_location(location)}"
+        f"{kind} for {_describe_location(location)}"
         + (f", timezone {payload.get('timezone')}" if payload.get("timezone") else "")
     ]
     for index, day in enumerate(times):

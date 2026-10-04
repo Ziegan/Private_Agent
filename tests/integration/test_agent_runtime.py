@@ -199,6 +199,28 @@ async def test_missing_ollama_keeps_online_provider_available(
 
 
 @pytest.mark.asyncio
+async def test_preferred_local_model_is_listed_first_and_marked(
+    scripted_local_cli, monkeypatch
+):
+    agent, _model, inputs, _workspace, _database_path = scripted_local_cli
+    monkeypatch.setattr(agent, "fetch_local_chat_models", lambda: ["a", "pref", "b"])
+    monkeypatch.setattr(agent, "PREFERRED_MODEL", "pref")
+    monkeypatch.setattr(agent, "prompt_user_input", AsyncMock(side_effect=["exit"]))
+    inputs.side_effect = ["", "", "", "1", ""]
+    printed = []
+    monkeypatch.setattr(
+        agent.console,
+        "print",
+        lambda *values, **_kwargs: printed.append(" ".join(map(str, values))),
+    )
+
+    await run_agent_cli_async()
+
+    listing = [line for line in printed if "1." in line and "pref" in line]
+    assert listing and "(configured, preferred)" in listing[0]
+
+
+@pytest.mark.asyncio
 async def test_startup_reports_task_plan_counts_without_printing_goals(
     scripted_local_cli, monkeypatch
 ):
@@ -1746,6 +1768,7 @@ async def test_runtime_bounds_assembled_long_session_to_model_context(
     monkeypatch.setattr(agent, "MAX_CONTEXT_TOKENS", 3000)
     monkeypatch.setattr(agent, "MAX_OUTPUT_TOKENS", 200)
     monkeypatch.setattr(agent, "MAX_HISTORY_MESSAGES", 60)
+    monkeypatch.setattr(agent, "CONTEXT_COMPACTION_THRESHOLD", 0)
     monkeypatch.setattr(
         agent,
         "inspect_model_capabilities",
@@ -1789,6 +1812,55 @@ async def test_runtime_bounds_assembled_long_session_to_model_context(
     assert "new question" in assembled
     assert "older-29" in assembled
     assert "older-0" not in assembled
+
+
+@pytest.mark.asyncio
+async def test_runtime_summarizes_full_context_instead_of_dropping_it(
+    scripted_local_cli, monkeypatch
+):
+    import private_agent.agent.runtime as agent
+    from private_agent.agent.prompts import token_count
+
+    _agent, model, inputs, _workspace, database_path = scripted_local_cli
+    memory = PersistentMemory(db_path=str(database_path))
+    for index in range(30):
+        memory.save_message("long-session", "human", f"older-{index} " + "history " * 150)
+        memory.save_message("long-session", "ai", f"answer-{index} " + "reply " * 150)
+    memory.close()
+
+    monkeypatch.setattr(agent, "MAX_CONTEXT_TOKENS", 3000)
+    monkeypatch.setattr(agent, "MAX_OUTPUT_TOKENS", 200)
+    monkeypatch.setattr(agent, "MAX_HISTORY_MESSAGES", 60)
+    monkeypatch.setattr(
+        agent,
+        "inspect_model_capabilities",
+        lambda _name: {
+            "tools": True, "function_calls": True, "structured_output": False,
+            "thinking": False, "vision": False, "audio": False,
+            "context_window": 1800,
+        },
+    )
+    monkeypatch.setattr(
+        agent, "prompt_user_input", AsyncMock(side_effect=["new question", "exit"])
+    )
+    model.responses = [
+        AIMessage(content="EARLIER-WORK-SUMMARY"),
+        AIMessage(content="bounded response"),
+        AIMessage(content="short summary"),
+    ]
+    inputs.side_effect = lambda prompt: (
+        "y" if "Resume latest session" in prompt
+        else "1" if "Choose provider" in prompt or "Select model choice" in prompt
+        else "2" if "permission mode" in prompt else ""
+    )
+    await run_agent_cli_async()
+
+    summarizing, answering = model.calls[0], model.calls[1]
+    assert token_count("\n".join(str(m.content) for m in summarizing)) <= 1800 - 200
+    assembled = "\n".join(str(m.content) for m in answering)
+    assert "EARLIER-WORK-SUMMARY" in assembled
+    assert "new question" in assembled
+    assert token_count(assembled) <= 1800 - 200
 
 
 @pytest.mark.asyncio
@@ -3688,3 +3760,60 @@ async def test_second_interrupt_skips_summary(tmp_path):
     )
     assert "Skipped" in out.getvalue()
     assert memory.get_all_episodic_summaries(session_id="s1") == []
+
+
+@pytest.mark.asyncio
+async def test_summarize_command_then_exit_does_not_resummarize(
+    scripted_local_cli, monkeypatch, capsys
+):
+    import private_agent.agent.runtime as agent
+
+    _agent, model, inputs, _workspace, _db = scripted_local_cli
+    monkeypatch.setattr(
+        agent,
+        "prompt_user_input",
+        AsyncMock(side_effect=["hello", "/summarize", "/summarize", "/compact", "exit"]),
+    )
+    model.responses = [
+        AIMessage(content="hi there"),
+        AIMessage(content="ON-DEMAND-SUMMARY"),
+        AIMessage(content="COMPACT-SUMMARY"),
+    ]
+    inputs.side_effect = lambda prompt: (
+        "n" if "Resume latest session" in prompt
+        else "1" if "Choose provider" in prompt or "Select model choice" in prompt
+        else "2" if "permission mode" in prompt else ""
+    )
+    await run_agent_cli_async()
+    out = capsys.readouterr().out
+    assert out.count("Saved to SQLite memory") == 1
+    assert "Nothing new since the last summary" in out
+    assert "Compacted into a working summary" in out
+    assert "already saved" in out
+
+
+@pytest.mark.asyncio
+async def test_exit_prints_session_statistics_table(
+    scripted_local_cli, monkeypatch, capsys
+):
+    import private_agent.agent.runtime as agent
+
+    _agent, model, inputs, _workspace, _db = scripted_local_cli
+    monkeypatch.setattr(
+        agent, "prompt_user_input", AsyncMock(side_effect=["hello", "exit"])
+    )
+    model.responses = [AIMessage(content="hi there"), AIMessage(content="the summary")]
+    inputs.side_effect = lambda prompt: (
+        "n" if "Resume latest session" in prompt
+        else "1" if "Choose provider" in prompt or "Select model choice" in prompt
+        else "2" if "permission mode" in prompt else ""
+    )
+    await run_agent_cli_async()
+    out = capsys.readouterr().out
+    for label in (
+        "Session Statistics", "SQL session ID", "Agent (permission) mode",
+        "Model provider", "Input tokens", "Output tokens", "Total tokens",
+        "Tool uses", "Total session time", "Summary tokens generated",
+        "Summary generation time",
+    ):
+        assert label in out

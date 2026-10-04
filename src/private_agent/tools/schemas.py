@@ -132,7 +132,9 @@ class DownloadWebFileInput(BaseModel):
 class ReadSqliteHistoryInput(BaseModel):
     limit: int = Field(
         default=DEFAULT_HISTORY_READ_LIMIT,
-        description="Number of recent chat history messages to read.",
+        ge=1,
+        le=500,
+        description="Number of recent chat history messages to read (1-500).",
     )
 
 

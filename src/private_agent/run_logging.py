@@ -6,12 +6,20 @@ from typing import Any, Optional
 
 from rich.console import Console
 
-from .config import DEBUG_LOG_ENABLED
+from .config import DEBUG_LOG_ENABLED, DEBUG_LOG_LEVEL
 
 
 RUN_LOGGER = logging.getLogger("private_agent.run")
-RUN_LOGGER.setLevel(logging.INFO)
 RUN_LOGGER.propagate = False
+# Package logger: module loggers (getLogger(__name__)) reach the trace file
+# through it, but never the terminal, because it only has the file handler.
+PACKAGE_LOGGER = logging.getLogger("private_agent")
+PACKAGE_LOGGER.propagate = False
+LOG_FORMAT = (
+    "%(asctime)s.%(msecs)03d | %(levelname)-8s | %(name)s | "
+    "%(filename)s:%(lineno)d | %(funcName)s | %(message)s"
+)
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def start_debug_logging() -> Optional[pathlib.Path]:
@@ -35,21 +43,24 @@ def start_debug_logging() -> Optional[pathlib.Path]:
         )
         stream = os.fdopen(descriptor, "w", encoding="utf-8")
         handler = logging.StreamHandler(stream)
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)s %(levelname)s %(message)s"
-        ))
-        RUN_LOGGER.addHandler(handler)
-        RUN_LOGGER.info("Run trace started")
+        handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
+        level = getattr(logging, DEBUG_LOG_LEVEL, logging.INFO)
+        handler.setLevel(level)
+        for logger in (PACKAGE_LOGGER, RUN_LOGGER):
+            logger.setLevel(level)
+            logger.addHandler(handler)
+        RUN_LOGGER.info("Run trace started (level %s)", DEBUG_LOG_LEVEL)
         return path
     except OSError as exc:
         raise RuntimeError(f"Could not create debug log in {log_dir}: {exc}") from exc
 
 
 def stop_debug_logging() -> None:
-    for handler in RUN_LOGGER.handlers[:]:
-        RUN_LOGGER.removeHandler(handler)
-        handler.flush()
-        handler.close()
+    for logger in (RUN_LOGGER, PACKAGE_LOGGER):
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+            handler.flush()
+            handler.close()
 
 
 def render_console_values(*values: Any, **kwargs: Any) -> str:
@@ -76,20 +87,25 @@ class LoggingConsoleAdapter:
         self._base = base_console or Console()
 
     def print(self, *values: Any, **kwargs: Any) -> None:
-        RUN_LOGGER.info("OUTPUT\n%s", render_console_values(*values, **kwargs))
+        RUN_LOGGER.info(
+            "OUTPUT\n%s", render_console_values(*values, **kwargs), stacklevel=2
+        )
         self._base.print(*values, **kwargs)
 
     def input(self, prompt: Any = "", **kwargs: Any) -> str:
         RUN_LOGGER.info(
             "INPUT REQUEST\n%s",
             render_console_values(prompt, end="", **kwargs),
+            stacklevel=2,
         )
         value = self._base.input(prompt, **kwargs)
-        RUN_LOGGER.info("INPUT RESPONSE\n%s", value)
+        RUN_LOGGER.info("INPUT RESPONSE\n%s", value, stacklevel=2)
         return value
 
     def status(self, status: Any, *args: Any, **kwargs: Any):
-        RUN_LOGGER.info("STATUS %s", render_console_values(status, end=""))
+        RUN_LOGGER.info(
+            "STATUS %s", render_console_values(status, end=""), stacklevel=2
+        )
         return self._base.status(status, *args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:

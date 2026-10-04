@@ -24,12 +24,20 @@ from ..config import (
     RAG_MAX_DOCUMENTS,
     RAG_MAX_FILE_BYTES,
     RAG_MAX_PDF_PAGES,
-    RAG_CHUNK_SIZE_CHARS,
-    RAG_CHUNK_OVERLAP_CHARS,
+    CHUNKING_MIN_CHUNK_CHARS,
+    CHUNKING_OVERLAP,
+    CHUNKING_SEMANTIC_BUFFER,
+    CHUNKING_SEMANTIC_MAX_SENTENCES,
+    CHUNKING_SEMANTIC_PERCENTILE,
+    CHUNKING_SEPARATORS,
+    CHUNKING_SIZE,
+    CHUNKING_STRATEGY,
+    CHUNKING_UNIT,
     RAG_SQLITE_MAX_ROWS_PER_TABLE,
 )
 from ..hardware import ollama_acceleration_options
 from ..tools import ollama_langchain_client_kwargs, track_ollama_http_clients
+from .chunking import ChunkingSettings, split_text
 from .retrieval import HybridRAGRetriever
 
 console = Console()
@@ -193,26 +201,35 @@ def reset_knowledge_base(index_path: Optional[str] = None) -> str:
     return str(target)
 
 
+def load_chunking_settings() -> ChunkingSettings:
+    """Build chunking settings from config, falling back to defaults when invalid."""
+    try:
+        return ChunkingSettings(
+            strategy=CHUNKING_STRATEGY,
+            chunk_size=CHUNKING_SIZE,
+            chunk_overlap=CHUNKING_OVERLAP,
+            unit=CHUNKING_UNIT if CHUNKING_UNIT in ("chars", "words", "tokens") else "chars",
+            min_chunk_chars=CHUNKING_MIN_CHUNK_CHARS,
+            separators=CHUNKING_SEPARATORS,
+            semantic_breakpoint_percentile=CHUNKING_SEMANTIC_PERCENTILE,
+            semantic_buffer_sentences=CHUNKING_SEMANTIC_BUFFER,
+            semantic_max_sentences=CHUNKING_SEMANTIC_MAX_SENTENCES,
+        )
+    except ValueError as exc:
+        console.print(
+            f"[yellow][Warning] Invalid chunking settings ({exc}); "
+            "using defaults.[/yellow]"
+        )
+        return ChunkingSettings(chunk_size=1200, chunk_overlap=200)
+
+
 def _split_into_chunks(
     content: str,
-    chunk_size: int = RAG_CHUNK_SIZE_CHARS,
-    overlap: int = RAG_CHUNK_OVERLAP_CHARS,
+    settings: Optional[ChunkingSettings] = None,
+    extension: str = "",
+    embed=None,
 ) -> List[str]:
-    chunks = []
-    start = 0
-    while start < len(content):
-        end = min(start + chunk_size, len(content))
-        if end < len(content):
-            boundary = content.rfind(" ", start + chunk_size // 2, end)
-            if boundary > start:
-                end = boundary
-        chunk = content[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        if end >= len(content):
-            break
-        start = max(end - overlap, start + 1)
-    return chunks
+    return split_text(content, settings or load_chunking_settings(), extension, embed)
 
 
 def _read_index_state(state_path: pathlib.Path) -> dict:
@@ -335,6 +352,8 @@ def initialize_knowledge_base(
     failed_sources = set()
     total_source_bytes = 0
 
+    chunking = load_chunking_settings()
+
     for file_path, stat in _iter_source_files(path):
         ext = file_path.suffix.lower()
         try:
@@ -354,7 +373,10 @@ def initialize_knowledge_base(
                 failed_sources.add(file_key)
                 continue
             total_source_bytes += stat.st_size
-            source_fingerprint = _source_fingerprint(file_path, stat)
+            source_fingerprint = {
+                **_source_fingerprint(file_path, stat),
+                "chunking": chunking.signature(),
+            }
 
             if ext == ".pdf":
                 try:
@@ -383,7 +405,9 @@ def initialize_knowledge_base(
             file_docs = []
             chunk_number = 0
             for content, page_number in pages:
-                for chunk_text in _split_into_chunks(content):
+                for chunk_text in _split_into_chunks(
+                    content, chunking, ext, getattr(embeddings, "embed_documents", None)
+                ):
                     metadata = {"source": file_key, "chunk": chunk_number}
                     if page_number is not None:
                         metadata["page"] = page_number
@@ -435,7 +459,7 @@ def initialize_knowledge_base(
                     if obsolete_ids:
                         vectorstore.delete(ids=list(obsolete_ids))
             else:
-                console.print(f"[green][Incremental Indexing][/green] No document changes detected. Skipping re-embedding.")
+                console.print("[green][Incremental Indexing][/green] No document changes detected. Skipping re-embedding.")
             removed_sources = set(index_state) - set(updated_state) - failed_sources
             for source in removed_sources:
                 vectorstore.delete(where={"source": source})

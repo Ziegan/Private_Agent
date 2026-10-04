@@ -35,7 +35,9 @@ class SandboxManager:
                 raise PermissionError
             return target
         except Exception:
-            raise PermissionError(f"Security Violation: Access denied outside workspace root ({cls.root_dir})")
+            raise PermissionError(
+                f"Security Violation: Access denied outside workspace root ({cls.root_dir})"
+            ) from None
 
 def create_hitl_snapshot(target_path: pathlib.Path):
     if target_path.exists():

@@ -130,3 +130,15 @@ def test_weather_forecast_uses_forecast_api():
         )
     assert seen["url"] == location.FORECAST_URL
     assert "forecast for X" in text and "clear sky" in text
+
+
+def test_online_permission_override_enables_device_tools(monkeypatch):
+    kwargs = {"capabilities": {"vision": True}, "isolation_warning": None}
+    names = ("fetch_current_location", "capture_webcam_image")
+    for name in names:
+        assert runtime._tool_unavailable_reason(name, provider_type="online", **kwargs)
+    monkeypatch.setattr(runtime, "ONLINE_PERMISSION_OVERRIDE", True)
+    for name in names:
+        assert runtime._tool_unavailable_reason(name, provider_type="online", **kwargs) is None
+    assert runtime._device_tools_allowed("online")
+    assert runtime._local_location_refusal("get_weather", {}, runtime._device_tools_allowed("online")) is None

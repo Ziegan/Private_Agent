@@ -148,8 +148,10 @@ Put documents for RAG in `~/.private_agent/rag/` and skills in
 
 Session commands: `exit`, `switch`, `/help`, `/list_tools`, `/maintenance`,
 `/plan`, `/tasks`, `/skills [key]`, `/think on|off`, `/think-effort
-low|medium|high`, `/think-status`, `/hardware-status`, and `@path/to/file`
+low|medium|high`, `/think-status`, `/hardware-status`, `/summarize` (summarize and store the session now; `exit` will not re-summarize unless new prompts followed), `/compact` (replace the context window with a short working summary, without storing it), and `@path/to/file`
 to attach a workspace text file as request-only context.
+
+On exit the agent saves the session summary (timed) and prints a **Session Statistics** table: SQL session ID, session/agent/permission mode, provider, model, thinking, total session time, input/output/total tokens (provider-reported when available, otherwise estimated), tool uses per tool, summary tokens and generation time.
 
 Backups: stop the agent, then copy the database with SQLite's backup API
 (`sqlite3.Connection.backup`) and copy the whole `paths.rag_index` directory.
@@ -249,8 +251,13 @@ Other behaviour:
 - Limits: `rag.max_file_bytes` per file, `rag.max_corpus_bytes` in total,
   `rag.max_pdf_pages` per PDF and `rag.max_documents` chunks; files over a limit
   are skipped with a warning.
-- Text is split into `rag.chunk_size_chars` chunks with `rag.chunk_overlap_chars`
-  overlap, and each retrieved chunk is cited by source path (and page for PDFs).
+- Text is split by the configurable `chunking` section (strategies: `fixed`,
+  `character`, `word`, `token`, `sentence`, `paragraph`, `line`, `recursive`,
+  `markdown`, `code`, `semantic`, or `auto` to pick by file extension). Each
+  retrieved chunk is cited by source path (and page for PDFs). Changing the
+  chunking settings re-embeds the affected files on the next index update.
+  `semantic` embeds sentences with the local embedding model and cuts where
+  topic similarity drops; it falls back to `sentence` if embedding fails.
 - The index updates automatically when files are added, changed or removed
   (see `rag.auto_refresh_seconds`).
 
@@ -277,6 +284,8 @@ values win on conflict.
     "preferred_model": null,                          // Default local model name
     "online_base_url": "https://api.openai.com/v1",   // OpenAI-compatible endpoint (HTTPS or loopback)
     "online_model": null,                             // Default online model id
+    "online_permission_override": false,              // true = online runs get ALL tools (incl. local-only location/media) without the per-session tool prompt; arguments/results go to the provider. Workspace/permission-mode approvals still apply
+    "online_api_key": null,                           // Optional saved API key; when set, online mode offers to use it with online_base_url (else the key is asked in the terminal). Plain text: restrict the file (chmod 600)
     "temperature": 0.1,                               // Sampling temperature
     "embedding_model": "nomic-embed-text",            // Ollama embedding model for RAG
     "thinking_enabled_by_default": false,             // Start with thinking on
@@ -297,6 +306,9 @@ values win on conflict.
     "max_output_tokens": 2048,                        // Model output token cap
     "max_model_capability_cache_entries": 128,        // Cached model capability lookups
     "summary_prompt_sentences": 2,                    // Target sentences for session summary
+    "context_compaction_threshold": 0.8,              // Auto-summarize older context once the prompt reaches this fraction of the window (0 = off, old messages are simply dropped)
+    "context_keep_recent_messages": 6,                // Newest messages kept verbatim when history is summarized
+    "context_summary_chars": 1500,                    // Max size of the running session context summary
     "rag_context_results": 2,                         // RAG chunks added to each prompt
     "streaming_output": true,                         // Stream model output as it arrives
     "visible_reasoning": false,                       // Show model reasoning when available
@@ -322,11 +334,22 @@ values win on conflict.
     "max_corpus_bytes": 26214400,                     // Total corpus cap (25 MiB)
     "max_pdf_pages": 250,                             // Pages read per PDF
     "max_documents": 20000,                           // Max indexed chunks/documents
-    "chunk_size_chars": 1200,                         // Chunk size
-    "chunk_overlap_chars": 200,                       // Chunk overlap
+    "chunk_size_chars": 1200,                         // Legacy chunk size (used when chunking.chunk_size is null)
+    "chunk_overlap_chars": 200,                       // Legacy chunk overlap (used when chunking.chunk_overlap is null)
     "similarity_results": 4,                          // Candidates fetched per query
     "sqlite_max_rows_per_table": 5000,                // Rows indexed per table of an indexed SQLite file
     "auto_refresh_seconds": 30                        // Min seconds between auto-update checks (0 = off)
+  },
+  "chunking": {
+    "strategy": "character",                          // fixed | character | word | token | sentence | paragraph | line | recursive | markdown | code | semantic | auto
+    "chunk_size": null,                               // Max chunk size in `unit`s (null = rag.chunk_size_chars)
+    "chunk_overlap": null,                            // Overlap in `unit`s, smaller than size (null = rag.chunk_overlap_chars)
+    "unit": "chars",                                  // chars | words | tokens (token = word or punctuation mark)
+    "min_chunk_chars": 0,                             // Merge chunks shorter than this into a neighbour (0 = off)
+    "separators": ["\n\n", "\n", ". ", " "],           // Split order for the recursive strategy (and markdown/auto sections)
+    "semantic_breakpoint_percentile": 90,             // Semantic: split where neighbour distance exceeds this percentile (0-100)
+    "semantic_buffer_sentences": 1,                   // Semantic: neighbouring sentences blended into each embedding
+    "semantic_max_sentences": 2000                    // Semantic: larger documents fall back to sentence chunking
   },
   "network": {
     "web_research_enabled": true,                     // Allow online research tools
@@ -385,7 +408,8 @@ values win on conflict.
     "failed_test_output_chars": 3000                  // Failing test output kept
   },
   "logging": {
-    "debug_enabled": 0                                // 1 writes a debug run trace file
+    "debug_enabled": 0,                               // 1 writes a debug run trace file (~/.private_agent/logs/, mode 0600; nothing extra is printed to the terminal)
+    "level": "INFO"                                   // DEBUG | INFO | WARNING | ERROR | CRITICAL; lines are "timestamp | LEVEL | logger | file.py:line | function | message"
   },
   "mcp": {
     "auto_approve_tools": [],                         // MCP tool names that skip confirmation

@@ -834,3 +834,76 @@ def test_duckduckgo_search_uses_bounded_pinned_http_client(monkeypatch):
     assert "Title: Docs" in result
     assert "Snippet: A useful result" in result
     assert "https://docs.example.test" in result
+
+
+def _configured_online_setup(monkeypatch, answers):
+    import private_agent.agent.runtime as agent
+
+    seen = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": [{"id": "model-a"}]}
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def get(self, url):
+            seen["url"] = url
+            return FakeResponse()
+
+    def factory(**kwargs):
+        seen["headers"] = kwargs["headers"]
+        return FakeClient()
+
+    monkeypatch.setattr(agent, "public_only_sync_client", factory)
+    monkeypatch.setattr(agent, "check_internet_connection", lambda *args: True)
+    monkeypatch.setattr(agent.sys, "stdin", MagicMock(isatty=lambda: True))
+    monkeypatch.setattr(
+        agent,
+        "APP_CONFIG",
+        {"online_base_url": "https://saved.example.test/v1", "online_api_key": "saved-key"},
+    )
+    monkeypatch.setattr(agent, "getpass", lambda prompt: "typed-key")
+    monkeypatch.setattr(agent, "_make_online_chat_model", lambda *args: "online-model")
+    monkeypatch.setattr(agent.console, "input", MagicMock(side_effect=answers))
+    return agent, seen
+
+
+def test_online_selection_uses_saved_url_and_key_when_accepted(monkeypatch):
+    agent, seen = _configured_online_setup(monkeypatch, ["", "", "n", "n"])
+    selected = agent.select_online_model()
+    assert selected["model"] == "online-model"
+    assert seen["url"] == "https://saved.example.test/v1/models"
+    assert seen["headers"]["Authorization"] == "Bearer saved-key"
+    assert "saved-key" not in repr(selected)
+
+
+def test_online_selection_allows_manual_entry_over_saved_config(monkeypatch):
+    agent, seen = _configured_online_setup(
+        monkeypatch, ["n", "https://other.example.test/v1", "y", "", "n", "n"]
+    )
+    selected = agent.select_online_model()
+    assert selected["model"] == "online-model"
+    assert seen["url"] == "https://other.example.test/v1/models"
+    assert seen["headers"]["Authorization"] == "Bearer typed-key"
+
+
+def test_online_permission_override_skips_tool_prompt_and_defaults_off(monkeypatch):
+    from private_agent.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["models"]["online_permission_override"] is False
+    import private_agent.agent.runtime as agent
+
+    # Prompts: share-context n, model id handled by listing "model-a" -> "" ; no tool prompt.
+    agent_mod, seen = _configured_online_setup(monkeypatch, ["", "", "n"])
+    monkeypatch.setattr(agent_mod, "ONLINE_PERMISSION_OVERRIDE", True)
+    selected = agent_mod.select_online_model()
+    assert selected["allow_tools"] is True
