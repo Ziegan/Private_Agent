@@ -12,11 +12,13 @@ from private_agent.tools import (
     validate_outbound_url,
     _get_limited_response,
     _PublicOnlyNetworkBackend,
+    _PublicOnlySyncHTTPTransport,
     _PublicOnlyAsyncHTTPTransport,
     close_outbound_http_clients,
     _search_duckduckgo,
     _validate_explicit_service_url,
 )
+from private_agent.tools import network as network_tools
 from private_agent.agent import (
     _online_request_failure,
     execute_tool_call,
@@ -44,6 +46,24 @@ except ImportError:
 
 console = Console()
 
+
+@pytest.fixture(autouse=True)
+def sync_mocked_resolver_with_async_backend(monkeypatch):
+    original_sync = network_tools._getaddrinfo_with_timeout
+    original_async = network_tools._getaddrinfo_async_with_timeout
+
+    async def resolve_async(host, port, timeout):
+        if network_tools._getaddrinfo_with_timeout is original_sync:
+            return await original_async(host, port, timeout)
+        return network_tools._getaddrinfo_with_timeout(host, port, timeout)
+
+    monkeypatch.setattr(
+        network_tools,
+        "_getaddrinfo_async_with_timeout",
+        resolve_async,
+    )
+
+
 def test_internet_probe_uses_per_call_timeout_without_global_socket_mutation():
     with patch("private_agent.tools.socket.create_connection") as connect:
         assert check_internet_connection("example.test", 443, 0.25) is True
@@ -62,7 +82,7 @@ def test_outbound_url_rejects_local_and_credentialed_destinations():
 
 def test_outbound_url_rejects_domains_resolving_to_private_addresses(monkeypatch):
     monkeypatch.setattr(
-        "private_agent.tools.socket.getaddrinfo",
+        "private_agent.tools.network._getaddrinfo_with_timeout",
         lambda *args, **kwargs: [
             (2, 1, 6, "", ("10.0.0.12", 80)),
         ],
@@ -70,13 +90,137 @@ def test_outbound_url_rejects_domains_resolving_to_private_addresses(monkeypatch
     with pytest.raises(ValueError, match="non-public"):
         validate_outbound_url("http://internal.example.test/")
 
+
+def test_resolver_child_timeout_is_bounded_and_reported(monkeypatch):
+    import subprocess
+    import httpcore
+
+    run = MagicMock(side_effect=subprocess.TimeoutExpired("resolver", 0.025))
+    monkeypatch.setattr(network_tools.subprocess, "run", run)
+
+    with pytest.raises(httpcore.ConnectTimeout, match="DNS resolution timed out"):
+        network_tools._getaddrinfo_with_timeout("slow.example.test", 443, 0.025)
+
+    assert run.call_args.kwargs["timeout"] == 0.025
+    assert run.call_args.kwargs["check"] is True
+
+
+def test_stalled_system_dns_child_is_terminated_within_deadline(monkeypatch):
+    import httpcore
+    import time
+
+    monkeypatch.setattr(
+        network_tools,
+        "_RESOLVER_SCRIPT",
+        "import time; time.sleep(5)",
+    )
+    started = time.monotonic()
+    with pytest.raises(httpcore.ConnectTimeout, match="DNS resolution timed out"):
+        network_tools._getaddrinfo_with_timeout("stalled.example.test", 443, 0.1)
+
+    assert time.monotonic() - started < 1
+
+
+@pytest.mark.asyncio
+async def test_async_resolver_kills_and_reaps_child_on_timeout(monkeypatch):
+    import httpcore
+
+    class DelayedResolver:
+        returncode = None
+
+        def __init__(self):
+            self.killed = False
+            self.finished = asyncio.Event()
+
+        async def communicate(self):
+            await self.finished.wait()
+            self.returncode = -9
+            return b"", b""
+
+        def kill(self):
+            self.killed = True
+            self.finished.set()
+
+    process = DelayedResolver()
+    create_process = AsyncMock(return_value=process)
+    monkeypatch.setattr(
+        network_tools.asyncio,
+        "create_subprocess_exec",
+        create_process,
+    )
+
+    with pytest.raises(httpcore.ConnectTimeout, match="DNS resolution timed out"):
+        await network_tools._getaddrinfo_async_with_timeout(
+            "slow.example.test", 443, 0.01
+        )
+
+    assert process.killed
+    create_process.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_stalled_async_dns_child_is_terminated_within_deadline(monkeypatch):
+    import httpcore
+    import time
+
+    monkeypatch.setattr(
+        network_tools,
+        "_RESOLVER_SCRIPT",
+        "import time; time.sleep(5)",
+    )
+    started = time.monotonic()
+    with pytest.raises(httpcore.ConnectTimeout, match="DNS resolution timed out"):
+        await network_tools._getaddrinfo_async_with_timeout(
+            "stalled.example.test", 443, 0.1
+        )
+
+    assert time.monotonic() - started < 1
+
+
+@pytest.mark.asyncio
+async def test_async_resolver_kills_and_reaps_child_on_cancellation(monkeypatch):
+    class DelayedResolver:
+        returncode = None
+
+        def __init__(self):
+            self.killed = False
+            self.finished = asyncio.Event()
+
+        async def communicate(self):
+            await self.finished.wait()
+            self.returncode = -9
+            return b"", b""
+
+        def kill(self):
+            self.killed = True
+            self.finished.set()
+
+    process = DelayedResolver()
+    monkeypatch.setattr(
+        network_tools.asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=process),
+    )
+    task = asyncio.create_task(
+        network_tools._getaddrinfo_async_with_timeout(
+            "slow.example.test", 443, 5
+        )
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert process.killed
+
 @pytest.mark.asyncio
 async def test_connect_backend_pins_validated_public_address(monkeypatch):
     backend = _PublicOnlyNetworkBackend()
     connect = AsyncMock(return_value="connected")
     monkeypatch.setattr(backend._backend, "connect_tcp", connect)
     monkeypatch.setattr(
-        "private_agent.tools.socket.getaddrinfo",
+        "private_agent.tools.network._getaddrinfo_with_timeout",
         lambda *args, **kwargs: [
             (2, 1, 6, "", ("1.1.1.1", 443)),
             (2, 1, 6, "", ("8.8.8.8", 443)),
@@ -85,6 +229,52 @@ async def test_connect_backend_pins_validated_public_address(monkeypatch):
     result = await backend.connect_tcp("public.example.test", 443)
     assert result == "connected"
     assert connect.await_args.args[0] == "1.1.1.1"
+
+
+def test_sync_connect_timeout_budget_includes_dns(monkeypatch):
+    import time
+
+    from private_agent.tools.network import _PublicOnlySyncNetworkBackend
+
+    backend = _PublicOnlySyncNetworkBackend()
+    observed = {}
+
+    def resolve(host, port, timeout):
+        time.sleep(0.02)
+        return ["1.1.1.1"]
+
+    def connect(address, port, timeout=None, **kwargs):
+        observed["timeout"] = timeout
+        return "connected"
+
+    monkeypatch.setattr(network_tools, "_getaddrinfo_with_timeout", resolve)
+    monkeypatch.setattr(backend._backend, "connect_tcp", connect)
+
+    assert backend.connect_tcp("public.example.test", 443, timeout=0.2) == "connected"
+    assert 0 < observed["timeout"] < 0.19
+
+
+@pytest.mark.asyncio
+async def test_async_connect_timeout_budget_includes_dns(monkeypatch):
+    backend = _PublicOnlyNetworkBackend()
+    observed = {}
+
+    async def resolve(host, port, timeout):
+        await asyncio.sleep(0.02)
+        return ["1.1.1.1"]
+
+    async def connect(address, port, timeout=None, **kwargs):
+        observed["timeout"] = timeout
+        return "connected"
+
+    monkeypatch.setattr(network_tools, "_getaddrinfo_async_with_timeout", resolve)
+    monkeypatch.setattr(backend._backend, "connect_tcp", connect)
+
+    assert await backend.connect_tcp(
+        "public.example.test", 443, timeout=0.2
+    ) == "connected"
+    assert 0 < observed["timeout"] < 0.19
+
 
 @pytest.mark.asyncio
 async def test_connect_backend_falls_back_from_unavailable_localhost_ipv6(monkeypatch):
@@ -100,7 +290,7 @@ async def test_connect_backend_falls_back_from_unavailable_localhost_ipv6(monkey
 
     monkeypatch.setattr(backend._backend, "connect_tcp", connect)
     monkeypatch.setattr(
-        "private_agent.tools.socket.getaddrinfo",
+        "private_agent.tools.network._getaddrinfo_with_timeout",
         lambda *args, **kwargs: [
             (10, 1, 6, "", ("::1", 11434, 0, 0)),
             (2, 1, 6, "", ("127.0.0.1", 11434)),
@@ -115,7 +305,7 @@ async def test_connect_backend_rejects_mixed_public_private_dns(monkeypatch):
     connect = AsyncMock()
     monkeypatch.setattr(backend._backend, "connect_tcp", connect)
     monkeypatch.setattr(
-        "private_agent.tools.socket.getaddrinfo",
+        "private_agent.tools.network._getaddrinfo_with_timeout",
         lambda *args, **kwargs: [
             (2, 1, 6, "", ("1.1.1.1", 443)),
             (2, 1, 6, "", ("10.0.0.5", 443)),
@@ -131,7 +321,7 @@ async def test_private_provider_transport_allows_only_explicit_private_literals(
     connect = AsyncMock(return_value="connected")
     monkeypatch.setattr(backend._backend, "connect_tcp", connect)
     monkeypatch.setattr(
-        "private_agent.tools.socket.getaddrinfo",
+        "private_agent.tools.network._getaddrinfo_with_timeout",
         lambda host, port, *args: [(2, 1, 6, "", (host, port))],
     )
     assert await backend.connect_tcp("192.168.1.20", 8080) == "connected"
@@ -142,7 +332,7 @@ async def test_private_provider_transport_allows_only_explicit_private_literals(
         ("169.254.169.254", "169.254.169.254"),
     ):
         monkeypatch.setattr(
-            "private_agent.tools.socket.getaddrinfo",
+            "private_agent.tools.network._getaddrinfo_with_timeout",
             lambda *args, address=resolved, **kwargs: [
                 (2, 1, 6, "", (address, 443))
             ],
@@ -173,7 +363,7 @@ async def test_real_http_transport_blocks_private_dns_results(
     server = await asyncio.start_server(respond, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     monkeypatch.setattr(
-        "private_agent.tools.socket.getaddrinfo",
+        "private_agent.tools.network._getaddrinfo_with_timeout",
         lambda *args, **kwargs: [
             (
                 10 if ":" in private_address else 2,
@@ -201,12 +391,54 @@ async def test_real_http_transport_blocks_private_dns_results(
         await server.wait_closed()
 
 
+def test_real_sync_http_transport_blocks_private_dns_results(monkeypatch):
+    import httpx
+    import socket
+    import threading
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.settimeout(1)
+    port = listener.getsockname()[1]
+    connected = threading.Event()
+
+    def accept_request():
+        try:
+            connection, _ = listener.accept()
+        except OSError:
+            return
+        connected.set()
+        connection.close()
+
+    server_thread = threading.Thread(target=accept_request)
+    server_thread.start()
+    monkeypatch.setattr(
+        network_tools,
+        "_getaddrinfo_with_timeout",
+        lambda host, port, timeout: ["127.0.0.1"],
+    )
+
+    try:
+        with httpx.Client(
+            transport=_PublicOnlySyncHTTPTransport(),
+            follow_redirects=False,
+            trust_env=False,
+        ) as client:
+            with pytest.raises(OSError, match="non-public"):
+                client.get(f"http://public.example.test:{port}/")
+        assert not connected.is_set()
+    finally:
+        listener.close()
+        server_thread.join(timeout=2)
+
+
 @pytest.mark.asyncio
 async def test_http_redirect_to_local_network_is_rejected(monkeypatch):
     import httpx
 
     monkeypatch.setattr(
-        "private_agent.tools.socket.getaddrinfo",
+        "private_agent.tools.network._getaddrinfo_with_timeout",
         lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 80))],
     )
     transport = httpx.MockTransport(
@@ -224,7 +456,7 @@ async def test_http_response_size_limit_is_enforced(monkeypatch):
     import httpx
 
     monkeypatch.setattr(
-        "private_agent.tools.socket.getaddrinfo",
+        "private_agent.tools.network._getaddrinfo_with_timeout",
         lambda *args, **kwargs: [(2, 1, 6, "", ("93.184.216.34", 80))],
     )
     transport = httpx.MockTransport(
@@ -249,13 +481,52 @@ async def test_http_total_timeout_releases_concurrency_slot(monkeypatch):
             return SlowResponse()
 
     monkeypatch.setattr("private_agent.tools.network.NETWORK_REQUEST_TIMEOUT", 0.01)
+    async def validate_url(url):
+        return url
+
     monkeypatch.setattr(
-        "private_agent.tools.network.validate_outbound_url", lambda url: url
+        "private_agent.tools.network._validate_outbound_url_async",
+        validate_url,
     )
     with pytest.raises(asyncio.TimeoutError):
         await _get_limited_response(SlowClient(), "https://public.test/", 100)
     assert tools._network_slots.acquire(blocking=False)
     tools._network_slots.release()
+
+
+@pytest.mark.asyncio
+async def test_async_request_timeout_cancels_dns_validation(monkeypatch):
+    import httpcore
+    import private_agent.tools as tools
+
+    cancelled = asyncio.Event()
+
+    async def stalled_resolver(host, port, timeout):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(
+        "private_agent.tools.network.NETWORK_REQUEST_TIMEOUT",
+        0.01,
+    )
+    monkeypatch.setattr(
+        "private_agent.tools.network._getaddrinfo_async_with_timeout",
+        stalled_resolver,
+    )
+    with pytest.raises((asyncio.TimeoutError, httpcore.ConnectTimeout)):
+        await _get_limited_response(
+            MagicMock(),
+            "https://stalled.example.test/",
+            100,
+        )
+
+    assert cancelled.is_set()
+    assert tools._network_slots.acquire(blocking=False)
+    tools._network_slots.release()
+
 
 def test_failed_download_preserves_existing_destination(temp_workspace, monkeypatch):
     destination = temp_workspace / "existing.txt"
@@ -453,7 +724,7 @@ def test_explicit_mcp_http_endpoints_are_peer_validated(monkeypatch):
         "http://mcp.example.test:8080/sse", {"http", "https"}
     ) == "http://mcp.example.test:8080/sse"
     assert checked == [("mcp.example.test", 8080, True)]
-    with pytest.raises(ValueError, match="explicit IP address"):
+    with pytest.raises(ValueError, match="HTTP or HTTPS"):
         _validate_explicit_service_url("wss://mcp.example.test/ws", {"ws", "wss"})
 
 def test_mcp_http_transport_uses_pinned_client_factory(monkeypatch):
@@ -503,14 +774,12 @@ def test_mcp_http_transport_uses_pinned_client_factory(monkeypatch):
         asyncio.run(client.aclose())
 
 def test_explicit_endpoint_blocks_private_hostname_resolution(monkeypatch):
-    import socket
     import private_agent.tools as tools
 
     monkeypatch.setattr(
-        tools.socket,
-        "getaddrinfo",
+        "private_agent.tools.network._getaddrinfo_with_timeout",
         lambda host, port, *_args: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.7", port))
+            "10.0.0.7"
         ],
     )
     with pytest.raises(OSError, match="non-public address"):

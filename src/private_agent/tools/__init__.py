@@ -12,6 +12,7 @@ from .schemas import (
     CreateSkillInput,
 )
 from . import _sqlite_state
+from . import _task_state
 from .network import (
     _PublicOnlyAsyncHTTPTransport as _PublicOnlyAsyncHTTPTransport,
     _PublicOnlyNetworkBackend as _PublicOnlyNetworkBackend,
@@ -34,7 +35,10 @@ from .network import (
 from .media import (
     capture_webcam_image,
     list_microphone_devices,
+    load_workspace_image,
+    load_workspace_video,
     record_microphone_audio,
+    transcribe_workspace_audio,
 )
 from ..config import (
     INTERNET_CHECK_HOST,
@@ -85,8 +89,11 @@ def check_internet_connection(
 NETWORK_TOOL_NAMES = frozenset({"web_search", "fetch_webpage", "download_web_file"})
 LOCAL_MEDIA_TOOL_NAMES = frozenset({
     "capture_webcam_image",
+    "load_workspace_image",
+    "load_workspace_video",
     "list_microphone_devices",
     "record_microphone_audio",
+    "transcribe_workspace_audio",
 })
 MCP_TOOL_NAMES = set()
 MCP_TOOL_SOURCES = {}
@@ -95,6 +102,7 @@ _ACTIVE_SKILL_DIRECTORY = os.path.abspath(
     os.path.expanduser(SKILLS_FOLDER_DEFAULT)
 ) if SKILLS_FOLDER_DEFAULT else None
 _ACTIVE_SKILL_REGISTRY = None
+_ACTIVE_SKILL_SESSION_ID = None
 
 
 def set_active_skill_runtime(folder_path: Optional[str], loaded_skills: dict) -> None:
@@ -104,6 +112,25 @@ def set_active_skill_runtime(folder_path: Optional[str], loaded_skills: dict) ->
         os.path.abspath(os.path.expanduser(folder_path)) if folder_path else None
     )
     _ACTIVE_SKILL_REGISTRY = loaded_skills
+
+
+def set_active_skill_session(session_id: Optional[str]) -> None:
+    """Associate newly created skills with the current conversation session."""
+    global _ACTIVE_SKILL_SESSION_ID
+    _ACTIVE_SKILL_SESSION_ID = session_id
+
+
+def set_active_task_context(
+    session_id: Optional[str],
+    task_id: Optional[str] = None,
+) -> None:
+    """Bind planner tools to the current session and optionally resumed task."""
+    _task_state.set_active_task_context(session_id, task_id)
+
+
+def clear_schema_reads() -> None:
+    """Require the model to inspect write-target schemas for each user turn."""
+    _task_state.clear_schema_reads()
 
 
 def describe_tool_catalog() -> list[dict[str, str]]:
@@ -131,11 +158,50 @@ def describe_tool_catalog() -> list[dict[str, str]]:
             permission = (
                 "local device metadata only"
                 if name == "list_microphone_devices"
-                else "explicit per-use local capture approval"
+                else "explicit per-use local media approval"
             )
         elif name == "get_local_datetime":
             permission = "no approval required; reads local system clock"
-        elif name in {"run_shell_command", "delete_chat_history_from_sqlite"}:
+        elif name in {
+            "create_task_plan",
+            "inspect_task_plan",
+            "update_todo_step",
+            "revise_task_plan",
+            "read_table_schema",
+        }:
+            permission = (
+                "read-only configured SQLite schema inspection"
+                if name == "read_table_schema"
+                else "SQLite task planning; plan execution requires user approval"
+            )
+        elif name in {
+            "read_chat_history_from_sqlite",
+            "search_chat_history_in_sqlite",
+            "inspect_task_plan",
+            "search_workspace_files",
+            "search_workspace_text",
+            "search_workspace_symbols",
+            "inspect_workspace_git",
+            "preview_workspace_patch",
+        }:
+            permission = (
+                "no approval required; reads local SQLite history"
+                if name in {
+                    "read_chat_history_from_sqlite",
+                    "search_chat_history_in_sqlite",
+                    "inspect_task_plan",
+                }
+                else (
+                    "read-only Git inspection"
+                    if name == "inspect_workspace_git"
+                    else "workspace-bounded read-only search"
+                )
+            )
+        elif name in {
+            "run_shell_command",
+            "delete_chat_history_from_sqlite",
+            "delete_chat_history_entry_from_sqlite",
+        }:
             permission = "interactive approval for shell/deletion/network actions"
         else:
             permission = "workspace path validation"
@@ -143,19 +209,52 @@ def describe_tool_catalog() -> list[dict[str, str]]:
         if name in NETWORK_TOOL_NAMES:
             effects = "network"
         elif name in LOCAL_MEDIA_TOOL_NAMES:
-            effects = (
-                "local microphone device metadata"
-                if name == "list_microphone_devices"
-                else "may access a local media device"
-            )
+            effects = {
+                "list_microphone_devices": "local microphone device metadata",
+                "load_workspace_image": "reads an explicitly approved workspace image",
+                "load_workspace_video": "samples an explicitly approved workspace video",
+                "transcribe_workspace_audio": (
+                    "transcribes an explicitly approved workspace audio file locally"
+                ),
+            }.get(name, "may access a local media device")
         elif name in {
             "edit_local_file",
+            "apply_workspace_patch",
+            "rename_workspace_file",
+            "delete_workspace_file",
             "run_shell_command",
             "download_web_file",
             "delete_chat_history_from_sqlite",
+            "delete_chat_history_entry_from_sqlite",
             "create_skill",
+            "create_task_plan",
+            "revise_task_plan",
+            "update_todo_step",
+            "read_table_schema",
         }:
-            effects = "may modify local state"
+            effects = (
+                "may modify local SQLite task state"
+                if name in {
+                    "create_task_plan",
+                    "revise_task_plan",
+                    "update_todo_step",
+                }
+                else "may modify local state"
+            )
+        elif name in {
+            "read_chat_history_from_sqlite",
+            "search_chat_history_in_sqlite",
+            "search_workspace_files",
+            "search_workspace_text",
+            "search_workspace_symbols",
+            "inspect_workspace_git",
+            "read_table_schema",
+        }:
+            effects = (
+                "read-only configured SQLite schema"
+                if name == "read_table_schema"
+                else "read-only/local"
+            )
         elif is_mcp:
             effects = (
                 "network-capable; server-defined effects"
@@ -169,7 +268,7 @@ def describe_tool_catalog() -> list[dict[str, str]]:
             "origin": origin,
             "permission": permission,
             "effects": effects,
-            "description": str(getattr(tool_object, "description", "") or "").splitlines()[0][:120],
+            "description": str(getattr(tool_object, "description", "") or "").strip(),
         })
     return catalog
 
@@ -211,6 +310,15 @@ def create_skill(name: str, description: str, instructions: str) -> str:
     try:
         if _ACTIVE_SKILL_DIRECTORY is None:
             return "Error creating skill: No skills directory is configured."
+        if (
+            _ACTIVE_SKILL_SESSION_ID
+            and "chat_history" not in _task_state.SCHEMA_READ_TABLES
+        ):
+            return (
+                "Error creating skill: call read_table_schema for chat_history "
+                "before creating a skill so its session registration follows the "
+                "destination schema."
+            )
         target = create_skill_file(
             _ACTIVE_SKILL_DIRECTORY, name, description, instructions
         )
@@ -227,6 +335,20 @@ def create_skill(name: str, description: str, instructions: str) -> str:
         )
         if isinstance(_ACTIVE_SKILL_REGISTRY, dict):
             _ACTIVE_SKILL_REGISTRY[skill_key] = skill
+        if _ACTIVE_SKILL_SESSION_ID:
+            from ..database import PersistentMemory
+
+            with _sqlite_lock:
+                memory = PersistentMemory(_sqlite_state.ACTIVE_DB_PATH)
+                try:
+                    memory.register_skill_file(
+                        _ACTIVE_SKILL_SESSION_ID,
+                        str(target),
+                        description.strip(),
+                        source_task_id=_task_state.ACTIVE_TASK_ID,
+                    )
+                finally:
+                    memory.close()
         return (
             f"Created skill '{display_name}' at {target}. "
             "It is available in this session and future runs."
@@ -237,18 +359,47 @@ def create_skill(name: str, description: str, instructions: str) -> str:
 
 # Import after network helpers are defined; web.py depends on this shared policy layer.
 from .web import download_web_file, fetch_webpage, web_search  # noqa: E402
-from .filesystem import edit_local_file, list_directory, read_local_file  # noqa: E402
+from .filesystem import (  # noqa: E402
+    edit_local_file,
+    apply_workspace_patch,
+    delete_workspace_file,
+    inspect_workspace_git,
+    list_directory,
+    preview_workspace_patch,
+    read_local_file,
+    rename_workspace_file,
+    search_workspace_files,
+    search_workspace_symbols,
+    search_workspace_text,
+)
 from .shell import run_shell_command  # noqa: E402
 from .memory import (  # noqa: E402
+    delete_chat_history_entry_from_sqlite,
     delete_chat_history_from_sqlite,
     read_chat_history_from_sqlite,
+    search_chat_history_in_sqlite,
+)
+from .planner import (  # noqa: E402
+    create_task_plan,
+    inspect_task_plan,
+    read_table_schema,
+    revise_task_plan,
+    update_todo_step,
 )
 
 
 AVAILABLE_TOOLS = {
     "get_local_datetime": get_local_datetime,
     "read_local_file": read_local_file,
+    "search_workspace_files": search_workspace_files,
+    "search_workspace_text": search_workspace_text,
+    "search_workspace_symbols": search_workspace_symbols,
+    "inspect_workspace_git": inspect_workspace_git,
     "edit_local_file": edit_local_file,
+    "preview_workspace_patch": preview_workspace_patch,
+    "apply_workspace_patch": apply_workspace_patch,
+    "rename_workspace_file": rename_workspace_file,
+    "delete_workspace_file": delete_workspace_file,
     "run_shell_command": run_shell_command,
     "web_search": web_search,
     "list_directory": list_directory,
@@ -256,10 +407,20 @@ AVAILABLE_TOOLS = {
     "download_web_file": download_web_file,
     "read_chat_history_from_sqlite": read_chat_history_from_sqlite,
     "delete_chat_history_from_sqlite": delete_chat_history_from_sqlite,
+    "search_chat_history_in_sqlite": search_chat_history_in_sqlite,
+    "delete_chat_history_entry_from_sqlite": delete_chat_history_entry_from_sqlite,
     "create_skill": create_skill,
+    "create_task_plan": create_task_plan,
+    "inspect_task_plan": inspect_task_plan,
+    "read_table_schema": read_table_schema,
+    "update_todo_step": update_todo_step,
+    "revise_task_plan": revise_task_plan,
     "capture_webcam_image": capture_webcam_image,
+    "load_workspace_image": load_workspace_image,
+    "load_workspace_video": load_workspace_video,
     "list_microphone_devices": list_microphone_devices,
     "record_microphone_audio": record_microphone_audio,
+    "transcribe_workspace_audio": transcribe_workspace_audio,
 }
 
 async def load_mcp_tools(*args, **kwargs) -> list:

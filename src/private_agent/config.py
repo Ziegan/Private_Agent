@@ -11,15 +11,27 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 CONFIG_FILE_PATH = pathlib.Path.home() / ".private_agent.conf"
+DEFAULT_SYSTEM_PROMPT_PATH = (
+    pathlib.Path(__file__).parent / "resources" / "default_system_prompt.md"
+)
+try:
+    DEFAULT_SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT_PATH.read_text(
+        encoding="utf-8"
+    ).strip()
+except OSError as exc:
+    raise RuntimeError(
+        f"Could not load packaged default system prompt at "
+        f"{DEFAULT_SYSTEM_PROMPT_PATH}: {exc}"
+    ) from exc
 
 DEFAULT_CONFIG = {
     "paths": {
         "database": "~/.local_ai_memory.db",
         "workspace": ".",
         "code_output": "~/.private_agent/projects",
-        "skills": "resources/skills",
-        "rag_documents": None,
-        "rag_index": "./.local_ai_chroma_db",
+        "skills": "~/.private_agent/resources/skills",
+        "rag_documents": "~/.private_agent/rag/",
+        "rag_index": "~/.private_agent/rag_index",
     },
     "models": {
         "ollama_base_url": "http://localhost:11434",
@@ -44,13 +56,26 @@ DEFAULT_CONFIG = {
         "max_tool_output_chars": 12000,
         "max_history_messages": 20,
         "max_context_tokens": 12000,
+        "max_output_tokens": 2048,
         "max_model_capability_cache_entries": 128,
         "summary_prompt_sentences": 2,
         "rag_context_results": 2,
+        "streaming_output": True,
+        "visible_reasoning": False,
+        "system_prompt": DEFAULT_SYSTEM_PROMPT,
     },
     "memory": {
         "conversation_retention_days": 0,
+        "episode_retention_days": 0,
+        "registered_skill_retention_days": 0,
+        "task_stale_after_days": 0,
         "max_summary_chars": 2000,
+        "max_learned_item_chars": 1000,
+        "learned_item_expiry_days": 365,
+        "learned_item_review_days": 180,
+        "max_resume_state_chars": 12000,
+        "max_memory_context_tokens": 1200,
+        "max_relevant_episodes": 3,
         "default_history_messages": 20,
         "default_episodic_summaries": 5,
     },
@@ -85,6 +110,7 @@ DEFAULT_CONFIG = {
         "binary_probe_bytes": 2048,
         "shell_command_timeout_seconds": 30,
         "default_history_read_limit": 20,
+        "override_tool_list": [],
     },
     "media": {
         "max_captured_image_bytes": 2097152,
@@ -103,6 +129,7 @@ DEFAULT_CONFIG = {
         "max_name_chars": 64,
         "max_description_chars": 500,
         "max_instruction_chars": 20000,
+        "max_preview_chars": 12000,
         "max_iterations": 15,
         "description_preview_chars": 100,
         "relevance_threshold": 1.5,
@@ -113,6 +140,7 @@ DEFAULT_CONFIG = {
     "code_tasks": {
         "git_command_timeout_seconds": 30,
         "test_command_timeout_seconds": 180,
+        "test_commands": [],
         "successful_test_output_chars": 6000,
         "failed_test_output_chars": 3000,
     },
@@ -148,10 +176,20 @@ _LEGACY_CONFIG_KEYS = {
     "max_tool_output_chars": ("agent", "max_tool_output_chars"),
     "max_history_messages": ("agent", "max_history_messages"),
     "max_context_tokens": ("agent", "max_context_tokens"),
+    "max_output_tokens": ("agent", "max_output_tokens"),
+    "STREAMING_OUTPUT": ("agent", "streaming_output"),
+    "streaming_output": ("agent", "streaming_output"),
+    "VISIBILE_REASONING": ("agent", "visible_reasoning"),
+    "visible_reasoning": ("agent", "visible_reasoning"),
     "max_model_capability_cache_entries": (
         "agent", "max_model_capability_cache_entries"
     ),
     "conversation_retention_days": ("memory", "conversation_retention_days"),
+    "episode_retention_days": ("memory", "episode_retention_days"),
+    "registered_skill_retention_days": (
+        "memory", "registered_skill_retention_days"
+    ),
+    "task_stale_after_days": ("memory", "task_stale_after_days"),
     "max_summary_chars": ("memory", "max_summary_chars"),
     "rag_max_file_bytes": ("rag", "max_file_bytes"),
     "rag_max_corpus_bytes": ("rag", "max_corpus_bytes"),
@@ -200,6 +238,16 @@ def _merge_config(config: dict) -> dict:
     for section, value in config.items():
         if section not in merged and section not in _LEGACY_CONFIG_KEYS:
             merged[section] = value
+    if merged["paths"].get("rag_documents") is None:
+        merged["paths"]["rag_documents"] = DEFAULT_CONFIG["paths"]["rag_documents"]
+    if merged["paths"].get("skills") == "resources/skills":
+        merged["paths"]["skills"] = DEFAULT_CONFIG["paths"]["skills"]
+    if merged["paths"].get("rag_index") == "./.local_ai_chroma_db":
+        merged["paths"]["rag_index"] = DEFAULT_CONFIG["paths"]["rag_index"]
+    if not isinstance(merged["agent"].get("system_prompt"), str) or not (
+        merged["agent"]["system_prompt"].strip()
+    ):
+        merged["agent"]["system_prompt"] = DEFAULT_SYSTEM_PROMPT
     for old_key, (section, key) in _LEGACY_CONFIG_KEYS.items():
         merged[old_key] = merged[section][key]
     return merged
@@ -317,13 +365,25 @@ def load_config() -> dict:
 # Load global configuration immediately with safe parsing/type conversions
 APP_CONFIG = load_or_create_config()
 
+def _configured_path(value, default: str) -> str:
+    """Expand config paths and anchor relative paths to the user's home."""
+    path = pathlib.Path(str(value or default)).expanduser()
+    if not path.is_absolute():
+        path = pathlib.Path.home() / path
+    return str(path.resolve())
+
+
 DEFAULT_DB_PATH = os.path.expanduser(str(APP_CONFIG.get("default_db_path", "~/.local_ai_memory.db")))
 WORKSPACE_ROOT_DEFAULT = str(APP_CONFIG.get("workspace_root", "."))
 CODE_OUTPUT_ROOT = str(APP_CONFIG.get("code_output_root", "~/.private_agent/projects"))
-SKILLS_FOLDER_DEFAULT = str(APP_CONFIG.get("skills_folder", "resources/skills"))
-
-_raw_rag_path = APP_CONFIG.get("rag_docs_path", None)
-RAG_DOCS_DEFAULT = str(_raw_rag_path) if _raw_rag_path else None
+SKILLS_FOLDER_DEFAULT = _configured_path(
+    APP_CONFIG.get("paths", {}).get("skills"),
+    DEFAULT_CONFIG["paths"]["skills"],
+)
+RAG_DOCS_DEFAULT = _configured_path(
+    APP_CONFIG.get("paths", {}).get("rag_documents"),
+    DEFAULT_CONFIG["paths"]["rag_documents"],
+)
 
 def _positive_int(key: str, default: int) -> int:
     try:
@@ -368,6 +428,18 @@ def _configured_int_range(
     return value if minimum <= value <= maximum else default
 
 
+def _configured_bool(section: str, key: str, default: bool) -> bool:
+    value = APP_CONFIG.get(section, {}).get(key, default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+        return default
+    return value if isinstance(value, bool) else default
+
+
 def _configured_float(section: str, key: str, default: float) -> float:
     try:
         value = float(APP_CONFIG.get(section, {}).get(key, default))
@@ -379,8 +451,9 @@ def _configured_float(section: str, key: str, default: float) -> float:
 MODEL_TEMPERATURE = _configured_float("models", "temperature", 0.1)
 
 EMBEDDING_MODEL = str(APP_CONFIG.get("embedding_model", "nomic-embed-text"))
-RAG_INDEX_PATH = os.path.expanduser(
-    str(APP_CONFIG.get("rag_index_path", "./.local_ai_chroma_db"))
+RAG_INDEX_PATH = _configured_path(
+    APP_CONFIG.get("paths", {}).get("rag_index"),
+    DEFAULT_CONFIG["paths"]["rag_index"],
 )
 OLLAMA_BASE_URL = str(APP_CONFIG.get("ollama_base_url", "http://localhost:11434"))
 HARDWARE_ACCELERATION_MODE = normalize_acceleration_mode(
@@ -394,10 +467,49 @@ MAX_TASK_SECONDS = _positive_int("max_task_seconds", 600)
 MAX_TOOL_OUTPUT_CHARS = _positive_int("max_tool_output_chars", 12000)
 MAX_HISTORY_MESSAGES = _positive_int("max_history_messages", 20)
 MAX_CONTEXT_TOKENS = _positive_int("max_context_tokens", 12000)
+MAX_OUTPUT_TOKENS = _configured_int_range(
+    "agent", "max_output_tokens", 2048, 1, 32768
+)
+STREAMING_OUTPUT = _configured_bool("agent", "streaming_output", True)
+VISIBLE_REASONING = _configured_bool("agent", "visible_reasoning", False)
+VISIBILE_REASONING = VISIBLE_REASONING
+_configured_system_prompt = APP_CONFIG.get("agent", {}).get("system_prompt")
+SYSTEM_PROMPT = (
+    _configured_system_prompt.strip()
+    if isinstance(_configured_system_prompt, str) and _configured_system_prompt.strip()
+    else DEFAULT_SYSTEM_PROMPT
+)
 CONVERSATION_RETENTION_DAYS = max(
     0, _positive_int("conversation_retention_days", 0)
 ) if APP_CONFIG.get("conversation_retention_days", 0) else 0
+EPISODE_RETENTION_DAYS = max(
+    0, _positive_int("episode_retention_days", 0)
+) if APP_CONFIG.get("episode_retention_days", 0) else 0
+REGISTERED_SKILL_RETENTION_DAYS = max(
+    0, _positive_int("registered_skill_retention_days", 0)
+) if APP_CONFIG.get("registered_skill_retention_days", 0) else 0
+TASK_STALE_AFTER_DAYS = max(
+    0, _positive_int("task_stale_after_days", 0)
+) if APP_CONFIG.get("task_stale_after_days", 0) else 0
 MAX_SUMMARY_CHARS = _positive_int("max_summary_chars", 2000)
+MAX_LEARNED_ITEM_CHARS = _configured_int_range(
+    "memory", "max_learned_item_chars", 1000, 1, 10000
+)
+MAX_RESUME_STATE_CHARS = _configured_int_range(
+    "memory", "max_resume_state_chars", 12000, 256, 100000
+)
+MAX_MEMORY_CONTEXT_TOKENS = _configured_int_range(
+    "memory", "max_memory_context_tokens", 1200, 128, 12000
+)
+MAX_RELEVANT_EPISODES = _configured_int_range(
+    "memory", "max_relevant_episodes", 3, 1, 20
+)
+LEARNED_ITEM_EXPIRY_DAYS = _configured_int_range(
+    "memory", "learned_item_expiry_days", 365, 1, 3650
+)
+LEARNED_ITEM_REVIEW_DAYS = _configured_int_range(
+    "memory", "learned_item_review_days", 180, 1, 3650
+)
 DEFAULT_HISTORY_MESSAGES = _configured_int(
     "memory", "default_history_messages", 20
 )
@@ -424,6 +536,20 @@ if WEB_RESEARCH_CONSENT not in {"ask", "session", "never"}:
 INTERNET_CHECK_HOST = str(APP_CONFIG.get("internet_check_host", "1.1.1.1"))
 INTERNET_CHECK_PORT = _positive_int("internet_check_port", 443)
 INTERNET_CHECK_TIMEOUT = _positive_float("internet_check_timeout", 3.0)
+
+_raw_override_tool_list = APP_CONFIG.get("tools", {}).get("override_tool_list", [])
+if isinstance(_raw_override_tool_list, list):
+    OVERRIDE_TOOL_LIST = frozenset(
+        name.strip()
+        for name in _raw_override_tool_list
+        if isinstance(name, str) and name.strip()
+    )
+else:
+    warnings.warn(
+        "tools.override_tool_list must be a list of tool names; ignoring it.",
+        RuntimeWarning,
+    )
+    OVERRIDE_TOOL_LIST = frozenset()
 
 _raw_thinking = APP_CONFIG.get("thinking_toggle_default", False)
 if isinstance(_raw_thinking, str):
@@ -485,8 +611,13 @@ MAX_STREAM_TIMEOUT = _configured_int(
 MAX_CAPTURED_IMAGE_BYTES = _configured_int(
     "media", "max_captured_image_bytes", 2 * 1024 * 1024
 )
+MAX_DECODED_IMAGE_PIXELS = _configured_int(
+    "media", "max_decoded_image_pixels", 20_000_000
+)
+MAX_MEDIA_FILE_BYTES = _configured_int("media", "max_media_file_bytes", 25 * 1024 * 1024)
 MAX_IMAGES_PER_TURN = _configured_int("media", "max_images_per_turn", 3)
 MAX_MICROPHONE_SECONDS = _configured_int("media", "max_microphone_seconds", 30)
+MAX_VIDEO_SECONDS = _configured_int("media", "max_video_seconds", 120)
 DEFAULT_MICROPHONE_SECONDS = _configured_float(
     "media", "default_microphone_seconds", 5.0
 )
@@ -503,6 +634,9 @@ MAX_IMAGE_HEIGHT = _configured_int("media", "max_image_height", 720)
 JPEG_QUALITY = _configured_int_range("media", "jpeg_quality", 85, 1, 100)
 MAX_SKILL_DESCRIPTION_CHARS = _configured_int("skills", "max_description_chars", 500)
 MAX_SKILL_INSTRUCTION_CHARS = _configured_int("skills", "max_instruction_chars", 20000)
+MAX_SKILL_PREVIEW_CHARS = _configured_int_range(
+    "skills", "max_preview_chars", 12000, 512, 100000
+)
 SKILL_MAX_ITERATIONS = _configured_int("skills", "max_iterations", 15)
 SKILL_DESCRIPTION_PREVIEW_CHARS = _configured_int(
     "skills", "description_preview_chars", 100
@@ -525,6 +659,37 @@ CODE_TASK_GIT_TIMEOUT = _configured_int(
 CODE_TASK_TEST_TIMEOUT = _configured_int(
     "code_tasks", "test_command_timeout_seconds", 180
 )
+_raw_code_task_test_commands = (APP_CONFIG.get("code_tasks") or {}).get(
+    "test_commands", []
+)
+CODE_TASK_TEST_COMMANDS = []
+if isinstance(_raw_code_task_test_commands, list):
+    if len(_raw_code_task_test_commands) > 16:
+        warnings.warn(
+            "Only the first 16 code_tasks.test_commands entries will be used.",
+            RuntimeWarning,
+        )
+    for _test_command in _raw_code_task_test_commands[:16]:
+        if (
+            isinstance(_test_command, list)
+            and 1 <= len(_test_command) <= 64
+            and all(
+                isinstance(argument, str) and 0 < len(argument) <= 2048
+                for argument in _test_command
+            )
+        ):
+            CODE_TASK_TEST_COMMANDS.append(_test_command)
+        else:
+            warnings.warn(
+                "Ignoring invalid code_tasks.test_commands entry; use a non-empty "
+                "array of at most 64 non-empty argument strings.",
+                RuntimeWarning,
+            )
+elif _raw_code_task_test_commands:
+    warnings.warn(
+        "Ignoring invalid code_tasks.test_commands; expected an array of argument arrays.",
+        RuntimeWarning,
+    )
 CODE_TASK_SUCCESS_OUTPUT_CHARS = _configured_int(
     "code_tasks", "successful_test_output_chars", 6000
 )

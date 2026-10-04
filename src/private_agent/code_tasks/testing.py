@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from ..config import (
     CODE_TASK_FAILURE_OUTPUT_CHARS,
     CODE_TASK_SUCCESS_OUTPUT_CHARS,
+    CODE_TASK_TEST_COMMANDS,
     CODE_TASK_TEST_TIMEOUT,
 )
 
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 def run_project_tests(
     workspace: "CodeTaskWorkspace",
     timeout: int = CODE_TASK_TEST_TIMEOUT,
+    extra_commands: list[list[str]] | None = None,
 ) -> str:
     from . import _TEST_FILE, _is_git_ignored, _isolated_command, _project_files
 
@@ -85,6 +87,13 @@ def run_project_tests(
         commands.append(["go", "test", "./..."])
     if (workspace.root / "Cargo.toml").exists():
         commands.append(["cargo", "test"])
+    commands.extend(
+        list(command)
+        for command in (
+            CODE_TASK_TEST_COMMANDS if extra_commands is None else extra_commands
+        )
+        if command
+    )
     commands = list(
         dict.fromkeys(
             tuple(command) if command is not None else None
@@ -111,7 +120,9 @@ def run_project_tests(
             continue
         try:
             isolated_command, environment = _isolated_command(
-                command, workspace.root
+                command,
+                workspace.root,
+                allow_network=workspace.allow_network,
             )
             result = subprocess.run(
                 isolated_command,

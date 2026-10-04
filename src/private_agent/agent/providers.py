@@ -20,20 +20,21 @@ def inspect_local_model_capabilities(
     max_cache_entries: int,
     console: Any,
     close_client: Callable[[Any], None],
-) -> Dict[str, Optional[bool]]:
+) -> Dict[str, Optional[bool] | int]:
     """Read Ollama-declared capabilities, with a bounded per-process cache."""
     cache_key = (base_url, model_name)
     cached = capability_cache.get(cache_key)
     if cached is not None:
         return cached.copy()
 
-    result: Dict[str, Optional[bool]] = {
+    result: Dict[str, Optional[bool] | int] = {
         "tools": None,
         "function_calls": None,
         "structured_output": None,
         "thinking": None,
         "vision": None,
         "audio": None,
+        "context_window": None,
     }
     client = None
     try:
@@ -56,6 +57,17 @@ def inspect_local_model_capabilities(
             if isinstance(model_info, dict)
             else []
         )
+    model_info = _response_field(details, "modelinfo", {}) or {}
+    if isinstance(model_info, dict):
+        context_lengths = [
+            int(value)
+            for key, value in model_info.items()
+            if str(key).lower().endswith("context_length")
+            and isinstance(value, (int, float))
+            and value > 0
+        ]
+        if context_lengths:
+            result["context_window"] = min(context_lengths)
     if not raw_capabilities:
         if len(capability_cache) >= max_cache_entries:
             capability_cache.clear()
@@ -94,6 +106,8 @@ def create_local_chat_model(
     client_kwargs: Callable[[], dict],
     acceleration_options: Callable[[str], dict],
     track_clients: Callable[[Any], None],
+    max_output_tokens: int = 2048,
+    context_window: Optional[int] = None,
 ) -> Any:
     options: Dict[str, Any] = {
         "model": model_name,
@@ -102,6 +116,9 @@ def create_local_chat_model(
     }
     options.update(client_kwargs())
     options.update(acceleration_options(acceleration_mode))
+    options["num_predict"] = max(1, max_output_tokens)
+    if context_window is not None:
+        options["num_ctx"] = max(1, context_window)
     if thinking is not None:
         options["reasoning"] = thinking
     model = chat_model_factory(**options)
@@ -123,6 +140,8 @@ def create_robust_local_chat_model(
     acceleration_options: Callable[[str], dict],
     track_clients: Callable[[Any], None],
     console: Any,
+    max_output_tokens: int = 2048,
+    context_window: Optional[int] = None,
 ) -> Any:
     """Create a local model, retrying a compatible fallback when appropriate."""
     last_error: Optional[Exception] = None
@@ -138,6 +157,8 @@ def create_robust_local_chat_model(
                 client_kwargs=client_kwargs,
                 acceleration_options=acceleration_options,
                 track_clients=track_clients,
+                max_output_tokens=max_output_tokens,
+                context_window=context_window,
             )
             return model.bind_tools(list(tools)) if tools is not None else model
         except Exception as exc:

@@ -72,19 +72,29 @@ def _run_git(
     )
 
 
-def _isolated_command(command: Sequence[str], root: Path) -> tuple[list[str], dict[str, str]]:
+def isolation_unavailable_reason() -> Optional[str]:
+    """Explain why OS-isolated project commands cannot run on this host."""
     if platform.system() != "Linux":
-        raise RuntimeError(
-            "Command execution is disabled: OS-level isolation is "
-            "currently supported only on Linux."
+        return "OS-level command isolation is currently supported only on Linux."
+    if not shutil.which("bwrap") or not shutil.which("prlimit"):
+        return (
+            "Install Bubblewrap (bwrap) and util-linux (prlimit) for "
+            "filesystem, network, and resource isolation."
         )
+    return None
+
+
+def _isolated_command(
+    command: Sequence[str],
+    root: Path,
+    *,
+    allow_network: bool = False,
+) -> tuple[list[str], dict[str, str]]:
+    unavailable_reason = isolation_unavailable_reason()
+    if unavailable_reason:
+        raise RuntimeError(f"Command execution is disabled: {unavailable_reason}")
     bwrap = shutil.which("bwrap")
     prlimit = shutil.which("prlimit")
-    if not bwrap or not prlimit:
-        raise RuntimeError(
-            "Command execution is disabled: install Bubblewrap (bwrap) "
-            "and prlimit to provide filesystem, network, and resource isolation."
-        )
     root = root.resolve()
     rewritten_command = []
     root_prefix = str(root)
@@ -150,13 +160,18 @@ def _isolated_command(command: Sequence[str], root: Path) -> tuple[list[str], di
         "--symlink", "usr/lib64", "/lib64",
         "--dir", "/etc",
     ]
-    for system_file in (
+    if allow_network:
+        args.append("--share-net")
+    system_files = [
         "/etc/ld.so.cache",
         "/etc/passwd",
         "/etc/group",
         "/etc/nsswitch.conf",
         "/etc/os-release",
-    ):
+    ]
+    if allow_network:
+        system_files.extend(("/etc/resolv.conf", "/etc/hosts"))
+    for system_file in system_files:
         if os.path.isfile(system_file):
             args.extend(["--ro-bind", system_file, system_file])
     if os.path.isdir("/etc/ssl/certs"):

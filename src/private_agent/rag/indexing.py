@@ -4,6 +4,7 @@ import json
 import hashlib
 import tempfile
 import shutil
+import uuid
 from datetime import datetime, timezone
 from typing import Optional, List, Callable
 from rich.console import Console
@@ -122,6 +123,15 @@ def _write_index_state_atomic(state_path: pathlib.Path, state: dict) -> None:
             temporary_path.unlink(missing_ok=True)
 
 
+def _preserve_corrupt_index(index_path: pathlib.Path) -> pathlib.Path:
+    backup_path = index_path.with_name(
+        f"{index_path.name}.backup-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex}"
+    )
+    os.replace(index_path, backup_path)
+    index_path.mkdir(parents=True, exist_ok=False)
+    return backup_path
+
+
 def initialize_knowledge_base(
     docs_path: Optional[str],
     *,
@@ -146,23 +156,12 @@ def initialize_knowledge_base(
         if confirm_rebuild is None or not confirm_rebuild(str(exc)):
             console.print(f"[red][RAG state error] {exc}[/red]")
             return None
-        backup_path = state_file_path.parent.with_name(
-            f"{state_file_path.parent.name}.backup-"
-            + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        )
-        if backup_path.exists():
-            console.print(
-                f"[red][RAG recovery error] Backup path already exists: "
-                f"{backup_path}; no index files were moved.[/red]"
-            )
-            return None
         try:
-            os.replace(state_file_path.parent, backup_path)
-            state_file_path.parent.mkdir(parents=True, exist_ok=False)
+            backup_path = _preserve_corrupt_index(state_file_path.parent)
         except OSError as recovery_error:
             console.print(
                 f"[red][RAG recovery error] Could not preserve the damaged "
-                f"index at '{backup_path}': {recovery_error}[/red]"
+                f"index: {recovery_error}[/red]"
             )
             return None
         console.print(
@@ -281,6 +280,7 @@ def initialize_knowledge_base(
             failed_sources.add(str(file_path.resolve()))
             console.print(f"[yellow][Warning] Failed parsing {file_path.name}: {e}[/yellow]")
 
+    state_write_started = False
     try:
         if db_exists:
             vectorstore = Chroma(persist_directory=chroma_persist_dir, embedding_function=embeddings)
@@ -324,10 +324,47 @@ def initialize_knowledge_base(
         for source in failed_sources:
             if source in index_state:
                 updated_state[source] = index_state[source]
+        state_write_started = True
         _write_index_state_atomic(state_file_path, updated_state)
         
         # Return Hybrid RAG retriever wrapper
         return HybridRAGRetriever(vectorstore, all_parsed_docs)
     except Exception as e:
+        if db_exists and not state_write_started and confirm_rebuild is not None:
+            if confirm_rebuild(
+                f"Vector database initialization/update failed: {e}. "
+                "The damaged index will be preserved before rebuilding."
+            ):
+                try:
+                    backup_path = _preserve_corrupt_index(
+                        pathlib.Path(chroma_persist_dir)
+                    )
+                    console.print(
+                        f"[yellow][RAG recovery][/yellow] Preserved the previous "
+                        f"vector index at '{backup_path}'. Rebuilding from current "
+                        "knowledge-base files."
+                    )
+                    if all_parsed_docs:
+                        vectorstore = Chroma.from_documents(
+                            all_parsed_docs,
+                            embeddings,
+                            persist_directory=chroma_persist_dir,
+                            ids=[
+                                doc.metadata["chunk_id"] for doc in all_parsed_docs
+                            ],
+                        )
+                    else:
+                        vectorstore = Chroma(
+                            persist_directory=chroma_persist_dir,
+                            embedding_function=embeddings,
+                        )
+                    _write_index_state_atomic(state_file_path, updated_state)
+                    return HybridRAGRetriever(vectorstore, all_parsed_docs)
+                except Exception as recovery_error:
+                    console.print(
+                        f"[red][RAG recovery error] Rebuild failed after preserving "
+                        f"the previous index: {recovery_error}[/red]"
+                    )
+                    return None
         console.print(f"[red][Error] Vector DB initialization error: {e}[/red]")
         return None

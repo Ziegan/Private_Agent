@@ -29,9 +29,17 @@ def run_shell_command(command: str) -> str:
             if evaluate_shell_command(command)
             else ""
         )
+        from .. import code_tasks
+
         console.print(
-            "[yellow]Commands run in a Linux OS sandbox with network disabled, "
-            f"workspace-only writes, and resource limits.{risk_notice}[/yellow]"
+            "[yellow]Commands run in a Linux OS sandbox with "
+            + (
+                "network access enabled by the approved coding access level, "
+                if code_tasks.ACTIVE_CODE_TASK is not None
+                and getattr(code_tasks.ACTIVE_CODE_TASK, "allow_network", False)
+                else "network disabled, "
+            )
+            + f"workspace-only writes, and resource limits.{risk_notice}[/yellow]"
         )
         if not _tool_invocation_approved.get():
             approval = console.input(
@@ -41,8 +49,6 @@ def run_shell_command(command: str) -> str:
             ).strip().lower()
             if approval != "y":
                 return "Error: Command execution was not approved; no command was run."
-        from .. import code_tasks
-
         if code_tasks.ACTIVE_CODE_TASK is not None and command_args[0] == "git":
             return (
                 "Error: Use checkpoint_code_task for local code-task checkpoints; "
@@ -53,6 +59,10 @@ def run_shell_command(command: str) -> str:
             code_tasks.ACTIVE_CODE_TASK.root
             if code_tasks.ACTIVE_CODE_TASK is not None
             else SandboxManager.root_dir,
+            allow_network=(
+                code_tasks.ACTIVE_CODE_TASK is not None
+                and getattr(code_tasks.ACTIVE_CODE_TASK, "allow_network", False)
+            ),
         )
         result = subprocess.run(
             isolated_command,

@@ -3,7 +3,7 @@
 import os
 import pathlib
 import shutil
-import time
+import uuid
 
 SNAPSHOT_DIR = pathlib.Path(".agent_snapshots").resolve()
 
@@ -39,9 +39,16 @@ class SandboxManager:
 
 def create_hitl_snapshot(target_path: pathlib.Path):
     if target_path.exists():
-        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-        backup_name = f"{target_path.name}_{int(time.time())}.bak"
-        shutil.copy2(target_path, SNAPSHOT_DIR / backup_name)
+        root = SandboxManager.root_dir.resolve()
+        source = target_path.resolve()
+        if not source.is_relative_to(root):
+            raise PermissionError("Cannot create a snapshot outside the active workspace.")
+        snapshot_dir = root / ".agent_snapshots"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        if not snapshot_dir.resolve().is_relative_to(root):
+            raise PermissionError("Workspace snapshot directory cannot escape the workspace.")
+        backup_name = f"{target_path.name}_{uuid.uuid4().hex}.bak"
+        shutil.copy2(source, snapshot_dir / backup_name)
 
 def evaluate_shell_command(command: str) -> bool:
     cmd_lower = command.lower()

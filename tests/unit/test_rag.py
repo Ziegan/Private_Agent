@@ -63,6 +63,24 @@ def test_context_budget_keeps_query_and_bounds_local_context():
     assert "answer this exact question" in bounded
     assert _token_count(bounded) <= 120
 
+
+def test_context_budget_includes_system_prompt_and_bounds_long_query():
+    from langchain_core.messages import SystemMessage
+
+    from private_agent.agent.prompts import calculate_prompt_budgets
+
+    system_prompts = [SystemMessage(content="rules " * 100)]
+    budget, output_budget = calculate_prompt_budgets(
+        system_prompts, context_window=2000, max_output_tokens=400
+    )
+    assert budget + output_budget + _token_count(system_prompts[0].content) < 2000
+
+    bounded = _build_bounded_user_input(
+        "Context", "", "", "long question " * 1000, budget=40
+    )
+    assert _token_count(bounded) <= 40
+
+
 def test_retrieved_source_citations_are_independent_of_model_response():
     documents = [
         types.SimpleNamespace(
@@ -267,6 +285,200 @@ def test_rag_vector_failure_does_not_advance_index_state(tmp_path, monkeypatch):
     monkeypatch.setattr("private_agent.rag.indexing.Chroma", FailingVectorStore)
     assert initialize_knowledge_base(str(docs), index_path=str(index)) is None
     assert _read_index_state(state_path) == old_state
+
+
+def test_rag_modified_and_removed_sources_update_vector_store_and_state(
+    tmp_path, monkeypatch
+):
+    from private_agent.rag import indexing
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    modified_source = docs / "modified.txt"
+    modified_source.write_text("new shorter text", encoding="utf-8")
+    removed_source = str((docs / "removed.txt").resolve())
+    index = tmp_path / "index"
+    index.mkdir()
+    (index / "chroma.sqlite3").touch()
+    old_state = {
+        str(modified_source.resolve()): {"mtime_ns": 1, "size": 100},
+        removed_source: {"mtime_ns": 1, "size": 20},
+    }
+    state_path = index / ".index_state.json"
+    state_path.write_text(json.dumps(old_state), encoding="utf-8")
+
+    class ExistingVectorStore:
+        def __init__(self, **kwargs):
+            self.deleted = []
+            self.added = []
+
+        def get(self, where):
+            assert where == {"source": str(modified_source.resolve())}
+            return {"ids": ["obsolete-chunk"]}
+
+        def add_documents(self, documents, ids):
+            self.added.extend(ids)
+
+        def delete(self, *, ids=None, where=None):
+            self.deleted.append({"ids": ids, "where": where})
+
+    store = ExistingVectorStore()
+    monkeypatch.setattr(indexing, "OllamaEmbeddings", lambda **kwargs: object())
+    monkeypatch.setattr(indexing, "Chroma", lambda **kwargs: store)
+
+    retriever = initialize_knowledge_base(str(docs), index_path=str(index))
+
+    assert retriever is not None
+    assert len(store.added) == 1
+    assert store.deleted == [
+        {"ids": ["obsolete-chunk"], "where": None},
+        {"ids": None, "where": {"source": removed_source}},
+    ]
+    assert set(_read_index_state(state_path)) == {str(modified_source.resolve())}
+
+
+def test_rag_corrupt_vector_database_fails_closed_without_advancing_state(
+    tmp_path, monkeypatch
+):
+    from private_agent.rag import indexing
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    source = docs / "notes.txt"
+    source.write_text("source remains indexed", encoding="utf-8")
+    index = tmp_path / "index"
+    index.mkdir()
+    (index / "chroma.sqlite3").write_text("corrupt", encoding="utf-8")
+    state_path = index / ".index_state.json"
+    old_state = {str(source.resolve()): {"mtime_ns": 1, "size": 1}}
+    state_path.write_text(json.dumps(old_state), encoding="utf-8")
+
+    monkeypatch.setattr(indexing, "OllamaEmbeddings", lambda **kwargs: object())
+
+    def corrupt_vector_store(**kwargs):
+        raise RuntimeError("database is corrupt")
+
+    monkeypatch.setattr(indexing, "Chroma", corrupt_vector_store)
+
+    assert initialize_knowledge_base(str(docs), index_path=str(index)) is None
+    assert _read_index_state(state_path) == old_state
+    assert (index / "chroma.sqlite3").read_text(encoding="utf-8") == "corrupt"
+
+
+def test_rag_corrupt_vector_database_can_be_explicitly_preserved_and_rebuilt(
+    tmp_path, monkeypatch
+):
+    from private_agent.rag import indexing
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    source = docs / "notes.txt"
+    source.write_text("rebuild from this source", encoding="utf-8")
+    index = tmp_path / "index"
+    index.mkdir()
+    corrupt_file = index / "chroma.sqlite3"
+    corrupt_file.write_text("corrupt bytes", encoding="utf-8")
+    old_state = {str(source.resolve()): {"mtime_ns": 1, "size": 1}}
+    (index / ".index_state.json").write_text(json.dumps(old_state), encoding="utf-8")
+    vectorstore = MagicMock()
+    chroma_calls = []
+
+    class RecoveringChroma:
+        def __new__(cls, **kwargs):
+            chroma_calls.append("open")
+            raise RuntimeError("vector database corruption")
+
+        @classmethod
+        def from_documents(cls, documents, embeddings, **kwargs):
+            chroma_calls.append("rebuild")
+            assert len(documents) == 1
+            return vectorstore
+
+    monkeypatch.setattr(indexing, "OllamaEmbeddings", lambda **kwargs: object())
+    monkeypatch.setattr(indexing, "Chroma", RecoveringChroma)
+
+    retriever = initialize_knowledge_base(
+        str(docs),
+        index_path=str(index),
+        confirm_rebuild=lambda detail: "vector database corruption" in detail,
+    )
+
+    backups = list(tmp_path.glob("index.backup-*"))
+    assert retriever is not None
+    assert chroma_calls == ["open", "rebuild"]
+    assert len(backups) == 1
+    assert (backups[0] / "chroma.sqlite3").read_text(encoding="utf-8") == "corrupt bytes"
+    assert _read_index_state(index / ".index_state.json") == {
+        str(source.resolve()): {
+            "mtime_ns": source.stat().st_mtime_ns,
+            "size": source.stat().st_size,
+        }
+    }
+
+
+def test_rag_partial_vector_update_requires_confirmation_then_rebuilds(
+    tmp_path, monkeypatch
+):
+    from private_agent.rag import indexing
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    source = docs / "changed.txt"
+    source.write_text("new source content", encoding="utf-8")
+    index = tmp_path / "index"
+    index.mkdir()
+    (index / "chroma.sqlite3").write_text("previous state", encoding="utf-8")
+    old_state = {str(source.resolve()): {"mtime_ns": 1, "size": 1}}
+    state_path = index / ".index_state.json"
+    state_path.write_text(json.dumps(old_state), encoding="utf-8")
+
+    class PartiallyFailingStore:
+        def __init__(self, **kwargs):
+            self.index_path = pathlib.Path(kwargs["persist_directory"])
+
+        def get(self, where):
+            return {"ids": ["old-chunk"]}
+
+        def add_documents(self, documents, ids):
+            (self.index_path / "partial-update").write_text(
+                ",".join(ids), encoding="utf-8"
+            )
+
+        def delete(self, **kwargs):
+            raise RuntimeError("delete failed after vector upsert")
+
+    rebuilt = MagicMock()
+
+    class RecoveringChroma:
+        def __new__(cls, **kwargs):
+            return PartiallyFailingStore(**kwargs)
+
+        @classmethod
+        def from_documents(cls, documents, embeddings, **kwargs):
+            assert len(documents) == 1
+            return rebuilt
+
+    monkeypatch.setattr(indexing, "OllamaEmbeddings", lambda **kwargs: object())
+    monkeypatch.setattr(indexing, "Chroma", RecoveringChroma)
+
+    refused = initialize_knowledge_base(
+        str(docs), index_path=str(index), confirm_rebuild=lambda _detail: False
+    )
+    assert refused is None
+    assert _read_index_state(state_path) == old_state
+    assert (index / "partial-update").exists()
+
+    confirmed = initialize_knowledge_base(
+        str(docs), index_path=str(index), confirm_rebuild=lambda _detail: True
+    )
+    backups = list(tmp_path.glob("index.backup-*"))
+    assert confirmed is not None
+    assert len(backups) == 1
+    assert (backups[0] / "chroma.sqlite3").read_text(encoding="utf-8") == "previous state"
+    assert (backups[0] / "partial-update").exists()
+    assert not (index / "partial-update").exists()
+    assert set(_read_index_state(state_path)) == {str(source.resolve())}
+
 
 def test_rag_enforces_corpus_byte_limit(tmp_path, monkeypatch):
     docs = tmp_path / "docs"

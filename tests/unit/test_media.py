@@ -25,7 +25,9 @@ except ImportError:
 from private_agent.tools.media import (
     capture_webcam_image,
     list_microphone_devices,
+    load_workspace_video,
     record_microphone_audio,
+    transcribe_workspace_audio,
     consume_captured_image,
     captured_image_message,
 )
@@ -125,6 +127,225 @@ def test_microphone_transcription_uses_local_model_without_downloading(
     assert "local words" in result
     assert "Offline microphone transcript" in result
 
+
+def test_workspace_video_sampling_is_bounded_and_transient(
+    monkeypatch, temp_workspace
+):
+    import private_agent.tools.media as media
+
+    video_path = temp_workspace / "clip.mp4"
+    video_path.write_bytes(b"bounded mock video")
+    frame = types.SimpleNamespace(shape=(360, 640, 3), ndim=3)
+
+    class EncodedImage:
+        def tobytes(self):
+            return b"sampled-jpeg"
+
+    class FakeCapture:
+        released = False
+
+        def __init__(self):
+            self.read_count = 0
+            self.positions = []
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            return {1: 8, 2: 2, 4: 640, 5: 360}[prop]
+
+        def set(self, prop, value):
+            self.positions.append(value)
+
+        def read(self):
+            self.read_count += 1
+            return True, frame
+
+        def release(self):
+            self.released = True
+
+    capture = FakeCapture()
+    cv2 = types.ModuleType("cv2")
+    cv2.VideoCapture = lambda _path: capture
+    cv2.CAP_PROP_FRAME_COUNT = 1
+    cv2.CAP_PROP_FPS = 2
+    cv2.CAP_PROP_POS_MSEC = 3
+    cv2.CAP_PROP_FRAME_WIDTH = 4
+    cv2.CAP_PROP_FRAME_HEIGHT = 5
+    cv2.IMWRITE_JPEG_QUALITY = 4
+    cv2.imencode = lambda *_args: (True, EncodedImage())
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+    monkeypatch.setattr(media, "_image_capture_count", 0)
+    media._captured_images.clear()
+
+    result = load_workspace_video.invoke({"file_path": "clip.mp4"})
+    references = __import__("re").findall(
+        r"video-image:([0-9a-f]{32})", result
+    )
+
+    assert len(references) == 3
+    assert capture.read_count == 3
+    assert capture.positions == [0, 2000, 4000]
+    assert capture.released
+    assert "not saved" in result
+    messages = [captured_image_message(f"video-image:{ref}") for ref in references]
+    assert all(message.content[0]["text"].endswith("video frame.") for message in messages)
+    assert all(consume_captured_image(f"video-image:{ref}") is None for ref in references)
+
+
+def test_workspace_audio_file_is_bounded_and_transcribed_locally(
+    monkeypatch, temp_workspace
+):
+    import io
+    import wave
+
+    audio_path = temp_workspace / "speech.wav"
+    with audio_path.open("wb") as raw_audio:
+        with wave.open(raw_audio, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(16000)
+            wav_file.writeframes(b"\0\0" * 16000)
+
+    def transcribe(audio_file):
+        assert isinstance(audio_file, io.BytesIO)
+        assert audio_file.read(4) == b"RIFF"
+        return "locally transcribed words"
+
+    monkeypatch.setattr(
+        "private_agent.tools.media._transcribe_local_audio", transcribe
+    )
+    result = transcribe_workspace_audio.invoke({"file_path": "speech.wav"})
+
+    assert "1.0s" in result
+    assert "locally transcribed words" in result
+
+
+def test_workspace_audio_rejects_unsupported_and_oversized_inputs(
+    monkeypatch, temp_workspace
+):
+    from private_agent.config import MAX_MEDIA_FILE_BYTES
+
+    from private_agent.tools.media import transcribe_workspace_audio
+
+    assert "PCM WAV files only" in transcribe_workspace_audio.invoke(
+        {"file_path": "speech.mp3"}
+    )
+    oversized = temp_workspace / "oversized.wav"
+    oversized.write_bytes(b"x" * (MAX_MEDIA_FILE_BYTES + 1))
+    assert "safety limit" in transcribe_workspace_audio.invoke(
+        {"file_path": "oversized.wav"}
+    )
+
+
+def test_workspace_video_rejects_overlong_media_and_releases_capture(
+    monkeypatch, temp_workspace
+):
+    video_path = temp_workspace / "long.mp4"
+    video_path.write_bytes(b"bounded mock video")
+
+    class FakeCapture:
+        released = False
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            return {1: 10000, 2: 10, 4: 640, 5: 360}[prop]
+
+        def release(self):
+            self.released = True
+
+    capture = FakeCapture()
+    cv2 = types.ModuleType("cv2")
+    cv2.VideoCapture = lambda _path: capture
+    cv2.CAP_PROP_FRAME_COUNT = 1
+    cv2.CAP_PROP_FPS = 2
+    cv2.CAP_PROP_FRAME_WIDTH = 4
+    cv2.CAP_PROP_FRAME_HEIGHT = 5
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+
+    result = load_workspace_video.invoke({"file_path": "long.mp4"})
+
+    assert "at most" in result
+    assert capture.released
+
+
+def test_workspace_video_rejects_oversized_frame_before_decoding(
+    monkeypatch, temp_workspace
+):
+    from private_agent.config import MAX_DECODED_IMAGE_PIXELS
+
+    video_path = temp_workspace / "huge-frames.mp4"
+    video_path.write_bytes(b"bounded mock video")
+
+    class FakeCapture:
+        read_called = False
+        released = False
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            return {
+                1: 30,
+                2: 30,
+                4: MAX_DECODED_IMAGE_PIXELS + 1,
+                5: 1,
+            }[prop]
+
+        def read(self):
+            self.read_called = True
+            raise AssertionError("Oversized video frame must not be decoded")
+
+        def release(self):
+            self.released = True
+
+    capture = FakeCapture()
+    cv2 = types.ModuleType("cv2")
+    cv2.VideoCapture = lambda _path: capture
+    cv2.CAP_PROP_FRAME_COUNT = 1
+    cv2.CAP_PROP_FPS = 2
+    cv2.CAP_PROP_FRAME_WIDTH = 4
+    cv2.CAP_PROP_FRAME_HEIGHT = 5
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+
+    result = load_workspace_video.invoke({"file_path": "huge-frames.mp4"})
+
+    assert "pixel safety limit" in result
+    assert not capture.read_called
+    assert capture.released
+
+
+def test_runtime_attaches_every_transient_video_frame(monkeypatch):
+    import private_agent.agent.runtime as agent
+    from langchain_core.messages import HumanMessage, ToolMessage
+
+    references = [
+        f"video-image:{index:032x}"
+        for index in range(3)
+    ]
+    attached = []
+
+    def capture(reference):
+        attached.append(reference)
+        return HumanMessage(content=reference)
+
+    monkeypatch.setattr(agent, "captured_image_message", capture)
+    messages = []
+    agent._append_captured_images_from_tool_results(
+        messages,
+        [
+            ToolMessage(
+                content="; ".join(references),
+                tool_call_id="video-frames",
+            )
+        ],
+    )
+
+    assert attached == references
+    assert [message.content for message in messages] == references
+
 def test_microphone_device_listing_reports_available_input_indexes():
     sounddevice = types.ModuleType("sounddevice")
     sounddevice.query_devices = lambda: [
@@ -164,11 +385,68 @@ async def test_media_tools_require_local_runtime_authorization(monkeypatch):
     assert "does not declare vision support" in result.content
     camera.invoke.assert_not_called()
 
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("load_workspace_video", {"file_path": "clip.mp4"}),
+        ("transcribe_workspace_audio", {"file_path": "speech.wav"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_workspace_media_files_are_blocked_for_online_provider(
+    monkeypatch, tool_name, arguments
+):
+    import private_agent.agent.runtime as agent
+
+    media_tool = MagicMock()
+    media_tool.ainvoke = MagicMock()
+    monkeypatch.setattr(agent, "AVAILABLE_TOOLS", {tool_name: media_tool})
+    monkeypatch.setattr(agent, "LOCAL_MEDIA_TOOL_NAMES", {tool_name})
+
+    result = await agent.execute_tool_call(
+        {
+            "name": tool_name,
+            "args": arguments,
+            "id": "online-media-file",
+        },
+        local_media_allowed=False,
+        media_capture_authorized=True,
+        vision_supported=True,
+    )
+
+    assert "only in an explicitly selected local" in result.content
+    media_tool.ainvoke.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_workspace_video_requires_vision_capability(monkeypatch):
+    import private_agent.agent.runtime as agent
+
+    video_tool = MagicMock()
+    monkeypatch.setattr(agent, "AVAILABLE_TOOLS", {"load_workspace_video": video_tool})
+    monkeypatch.setattr(agent, "LOCAL_MEDIA_TOOL_NAMES", {"load_workspace_video"})
+
+    result = await agent.execute_tool_call(
+        {
+            "name": "load_workspace_video",
+            "args": {"file_path": "clip.mp4"},
+            "id": "video-no-vision",
+        },
+        local_media_allowed=True,
+        media_capture_authorized=True,
+        vision_supported=False,
+    )
+
+    assert "does not declare vision support" in result.content
+    video_tool.ainvoke.assert_not_called()
+
+
 def test_webcam_tool_failure_is_reported_without_model_retry():
     import private_agent.agent.runtime as agent
     from langchain_core.messages import ToolMessage
 
-    error = agent._webcam_capture_error(
+    error = agent._local_image_input_error(
         [{"name": "capture_webcam_image", "id": "camera-failed"}],
         [
             ToolMessage(
@@ -184,7 +462,7 @@ def test_webcam_tool_failure_is_reported_without_model_retry():
     assert error is not None
     assert "Camera capture is optional" in error
     assert (
-        agent._webcam_capture_error(
+        agent._local_image_input_error(
             [{"name": "capture_webcam_image", "id": "camera-declined"}],
             [
                 ToolMessage(

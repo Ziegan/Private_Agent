@@ -2,8 +2,12 @@
 
 import asyncio
 import ipaddress
-import socket
+import json
+import os
+import subprocess
+import sys
 import threading
+import time
 import urllib.parse
 
 import httpcore
@@ -28,9 +32,90 @@ _EXPLICIT_PRIVATE_NETWORKS = tuple(
     for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
 )
 
+_RESOLVER_SCRIPT = (
+    "import json,socket,sys;"
+    "records=socket.getaddrinfo(sys.argv[1],int(sys.argv[2]),0,socket.SOCK_STREAM);"
+    "print(json.dumps([record[4][0] for record in records]))"
+)
 
-def _resolve_validated_peer(host: str, port: int, allow_loopback: bool):
-    records = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+
+def _resolver_command(host: str, port: int):
+    return [sys.executable, "-I", "-S", "-c", _RESOLVER_SCRIPT, host, str(port)]
+
+
+def _resolver_environment():
+    return {"LANG": "C", "PATH": os.defpath}
+
+
+def _parse_resolver_output(output: str):
+    try:
+        addresses = json.loads(output)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise OSError("Outbound resolver returned an invalid response.") from exc
+    if not isinstance(addresses, list) or not all(
+        isinstance(address, str) for address in addresses
+    ):
+        raise OSError("Outbound resolver returned an invalid response.")
+    return addresses
+
+
+def _getaddrinfo_with_timeout(host: str, port: int, timeout: float):
+    """Resolve in a killable child so stalled system DNS cannot outlive its deadline."""
+    try:
+        result = subprocess.run(
+            _resolver_command(host, port),
+            capture_output=True,
+            check=True,
+            close_fds=True,
+            env=_resolver_environment(),
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise httpcore.ConnectTimeout("Outbound DNS resolution timed out.") from exc
+    except subprocess.CalledProcessError as exc:
+        raise OSError("Outbound hostname could not be resolved.") from exc
+    return _parse_resolver_output(result.stdout)
+
+
+async def _getaddrinfo_async_with_timeout(host: str, port: int, timeout: float):
+    """Resolve asynchronously and kill/reap the resolver if cancelled or timed out."""
+    process = await asyncio.create_subprocess_exec(
+        *_resolver_command(host, port),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=_resolver_environment(),
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        await _kill_and_reap_resolver(process)
+        raise httpcore.ConnectTimeout("Outbound DNS resolution timed out.") from exc
+    except asyncio.CancelledError:
+        await _kill_and_reap_resolver(process)
+        raise
+    if process.returncode:
+        raise OSError("Outbound hostname could not be resolved.")
+    return _parse_resolver_output(stdout.decode("utf-8", errors="strict"))
+
+
+async def _kill_and_reap_resolver(process):
+    try:
+        process.kill()
+    except ProcessLookupError:
+        pass
+    await process.communicate()
+
+
+def _connect_deadline(timeout):
+    if timeout is None:
+        duration = NETWORK_REQUEST_TIMEOUT
+    else:
+        duration = min(max(0.0, float(timeout)), NETWORK_REQUEST_TIMEOUT)
+    return time.monotonic() + duration
+
+
+def _validated_peer_addresses(host: str, records, allow_loopback: bool):
     addresses = []
     explicit_local_host = host.lower() == "localhost"
     literal_address = None
@@ -47,7 +132,8 @@ def _resolve_validated_peer(host: str, port: int, allow_loopback: bool):
     except ValueError:
         pass
     for record in records:
-        address = ipaddress.ip_address(record[4][0].split("%", 1)[0])
+        resolved_address = record if isinstance(record, str) else record[4][0]
+        address = ipaddress.ip_address(resolved_address.split("%", 1)[0])
         if not address.is_global and not (
             allow_loopback
             and explicit_local_host
@@ -67,6 +153,51 @@ def _resolve_validated_peer(host: str, port: int, allow_loopback: bool):
     return addresses
 
 
+def _resolve_validated_peer(
+    host: str,
+    port: int,
+    allow_loopback: bool,
+    timeout: float = NETWORK_REQUEST_TIMEOUT,
+):
+    deadline = time.monotonic() + min(max(0.0, timeout), NETWORK_REQUEST_TIMEOUT)
+    if deadline <= time.monotonic():
+        raise httpcore.ConnectTimeout("Outbound DNS resolution timed out.")
+    try:
+        literal_address = ipaddress.ip_address(host.split("%", 1)[0])
+        records = [str(literal_address)]
+    except ValueError:
+        try:
+            records = _getaddrinfo_with_timeout(
+                host,
+                port,
+                max(0.0, deadline - time.monotonic()),
+            )
+        except httpcore.ConnectTimeout as exc:
+            raise OSError("Outbound DNS resolution timed out.") from exc
+    return _validated_peer_addresses(host, records, allow_loopback)
+
+
+async def _resolve_validated_peer_async(
+    host: str,
+    port: int,
+    allow_loopback: bool,
+    timeout: float,
+):
+    deadline = time.monotonic() + min(max(0.0, timeout), NETWORK_REQUEST_TIMEOUT)
+    if deadline <= time.monotonic():
+        raise httpcore.ConnectTimeout("Outbound DNS resolution timed out.")
+    try:
+        literal_address = ipaddress.ip_address(host.split("%", 1)[0])
+        records = [str(literal_address)]
+    except ValueError:
+        records = await _getaddrinfo_async_with_timeout(
+            host,
+            port,
+            max(0.0, deadline - time.monotonic()),
+        )
+    return _validated_peer_addresses(host, records, allow_loopback)
+
+
 class _PublicOnlyNetworkBackend:
     """Resolve and validate each peer immediately before connecting to its IP."""
 
@@ -84,16 +215,23 @@ class _PublicOnlyNetworkBackend:
         local_address=None,
         socket_options=None,
     ):
-        addresses = await asyncio.to_thread(
-            _resolve_validated_peer, host, port, self._allow_loopback
+        deadline = _connect_deadline(timeout)
+        addresses = await _resolve_validated_peer_async(
+            host,
+            port,
+            self._allow_loopback,
+            max(0.0, deadline - time.monotonic()),
         )
         last_error = None
         for address in addresses:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise httpcore.ConnectTimeout("Outbound connection timed out.")
             try:
                 return await self._backend.connect_tcp(
                     str(address),
                     port,
-                    timeout=timeout,
+                    timeout=remaining,
                     local_address=local_address,
                     socket_options=socket_options,
                 )
@@ -120,14 +258,23 @@ class _PublicOnlySyncNetworkBackend:
     def connect_tcp(
         self, host, port, timeout=None, local_address=None, socket_options=None
     ):
-        addresses = _resolve_validated_peer(host, port, self._allow_loopback)
+        deadline = _connect_deadline(timeout)
+        addresses = _resolve_validated_peer(
+            host,
+            port,
+            self._allow_loopback,
+            max(0.0, deadline - time.monotonic()),
+        )
         last_error = None
         for address in addresses:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise httpcore.ConnectTimeout("Outbound connection timed out.")
             try:
                 return self._backend.connect_tcp(
                     str(address),
                     port,
-                    timeout=timeout,
+                    timeout=remaining,
                     local_address=local_address,
                     socket_options=socket_options,
                 )
@@ -289,34 +436,52 @@ _network_slots = threading.BoundedSemaphore(MAX_NETWORK_CONCURRENCY)
 def validate_outbound_url(url: str) -> str:
     """Reject non-HTTP(S), credentialed, local, and non-public network targets."""
     try:
-        parsed = urllib.parse.urlsplit(url)
-        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
-            raise ValueError("Only HTTP(S) URLs with a host are allowed.")
-        if parsed.username or parsed.password:
-            raise ValueError("URLs containing credentials are not allowed.")
-        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
-        hostname = parsed.hostname.rstrip(".")
-        try:
-            addresses = {ipaddress.ip_address(hostname)}
-        except ValueError:
-            records = socket.getaddrinfo(
-                hostname,
-                port,
-                type=socket.SOCK_STREAM,
-            )
-            addresses = {
-                ipaddress.ip_address(record[4][0].split("%", 1)[0])
-                for record in records
-            }
-        if not addresses or any(not address.is_global for address in addresses):
-            raise ValueError(
-                "URLs resolving to non-public network addresses are not allowed."
-            )
+        normalized_url = _normalize_outbound_url(url)
+        parsed = urllib.parse.urlsplit(normalized_url)
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        _resolve_validated_peer(
+            parsed.hostname,
+            port,
+            allow_loopback=False,
+        )
     except (ValueError, OSError) as exc:
         raise ValueError(f"Unsafe outbound URL: {exc}") from exc
+    return normalized_url
+
+
+def _normalize_outbound_url(url: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Only HTTP(S) URLs with a host are allowed.")
+    if parsed.username or parsed.password:
+        raise ValueError("URLs containing credentials are not allowed.")
+    hostname = parsed.hostname.rstrip(".")
+    if not hostname:
+        raise ValueError("The URL must contain a hostname.")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("The URL contains an invalid port.") from exc
     return urllib.parse.urlunsplit(
         (parsed.scheme.lower(), parsed.netloc, parsed.path or "/", parsed.query, "")
     )
+
+
+async def _validate_outbound_url_async(url: str) -> str:
+    """Validate URL policy without leaving DNS work behind on cancellation."""
+    try:
+        normalized_url = _normalize_outbound_url(url)
+        parsed = urllib.parse.urlsplit(normalized_url)
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        await _resolve_validated_peer_async(
+            parsed.hostname,
+            port,
+            allow_loopback=False,
+            timeout=NETWORK_REQUEST_TIMEOUT,
+        )
+    except (ValueError, OSError) as exc:
+        raise ValueError(f"Unsafe outbound URL: {exc}") from exc
+    return normalized_url
 
 
 def validate_explicit_service_url(url: str, transports: set[str]) -> str:
@@ -332,25 +497,9 @@ def validate_explicit_service_url(url: str, transports: set[str]) -> str:
             "Service URL must use an allowed scheme and contain no credentials or fragment."
         )
     port = parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80)
-    if parsed.scheme in {"http", "https"}:
-        _resolve_validated_peer(parsed.hostname, port, allow_loopback=True)
-    else:
-        try:
-            address = ipaddress.ip_address(parsed.hostname)
-        except ValueError as exc:
-            raise ValueError(
-                "WebSocket MCP requires an explicit IP address because its "
-                "transport cannot pin hostname resolution."
-            ) from exc
-        if not (
-            address.is_global
-            or address.is_loopback
-            or any(
-                address.version == network.version and address in network
-                for network in _EXPLICIT_PRIVATE_NETWORKS
-            )
-        ):
-            raise ValueError("WebSocket MCP address is not permitted.")
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("MCP service URLs must use HTTP or HTTPS.")
+    _resolve_validated_peer(parsed.hostname, port, allow_loopback=True)
     return urllib.parse.urlunsplit(
         (parsed.scheme, parsed.netloc, parsed.path or "/", parsed.query, "")
     )
@@ -366,7 +515,7 @@ async def _get_limited_response(
         raise TimeoutError("Outbound request concurrency limit wait timed out.")
     try:
         async def request_with_redirects():
-            current_url = await asyncio.to_thread(validate_outbound_url, url)
+            current_url = await _validate_outbound_url_async(url)
             for redirect_count in range(MAX_HTTP_REDIRECTS + 1):
                 async with client.stream("GET", current_url) as response:
                     if response.is_redirect:
@@ -375,8 +524,7 @@ async def _get_limited_response(
                             raise ValueError(
                                 "HTTP redirect limit exceeded or redirect target missing."
                             )
-                        current_url = await asyncio.to_thread(
-                            validate_outbound_url,
+                        current_url = await _validate_outbound_url_async(
                             urllib.parse.urljoin(current_url, location),
                         )
                         continue
@@ -413,7 +561,9 @@ def search_duckduckgo(query: str, client_factory=public_only_sync_client) -> str
     if not acquired:
         raise TimeoutError("Outbound request concurrency limit wait timed out.")
     try:
-        current_url = validate_outbound_url("https://html.duckduckgo.com/html/")
+        current_url = _normalize_outbound_url(
+            "https://html.duckduckgo.com/html/"
+        )
         with client_factory(
             headers={"User-Agent": "PrivateAgent/1.0"},
             timeout=httpx.Timeout(NETWORK_REQUEST_TIMEOUT),
@@ -431,7 +581,7 @@ def search_duckduckgo(query: str, client_factory=public_only_sync_client) -> str
                             raise ValueError(
                                 "HTTP redirect limit exceeded or redirect target missing."
                             )
-                        current_url = validate_outbound_url(
+                        current_url = _normalize_outbound_url(
                             urllib.parse.urljoin(current_url, location)
                         )
                         continue

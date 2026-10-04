@@ -11,6 +11,21 @@ from typing import Optional, Sequence
 from ..config import CODE_TASK_TEST_TIMEOUT
 
 
+def _remove_copied_symlinks(root: Path) -> None:
+    """Remove symlinks that appeared during the source-tree copy."""
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(directory)
+        for name in list(dirnames):
+            path = current / name
+            if path.is_symlink():
+                path.unlink()
+                dirnames.remove(name)
+        for name in filenames:
+            path = current / name
+            if path.is_symlink():
+                path.unlink()
+
+
 @dataclass
 class CodeTaskWorkspace:
     root: Path
@@ -19,6 +34,8 @@ class CodeTaskWorkspace:
     original_source: Optional[Path] = None
     last_test_result: Optional[str] = None
     initial_commit: Optional[str] = None
+    direct_source: bool = False
+    allow_network: bool = False
 
     @classmethod
     def create(
@@ -27,6 +44,8 @@ class CodeTaskWorkspace:
         output_root: str,
         *,
         source_path: Optional[str] = None,
+        direct_source: bool = False,
+        allow_network: bool = False,
         confirm_without_git=None,
     ) -> Optional["CodeTaskWorkspace"]:
         from . import (
@@ -37,16 +56,44 @@ class CodeTaskWorkspace:
         )
 
         root_parent = Path(output_root).expanduser().resolve()
-        root_parent.mkdir(parents=True, exist_ok=True)
         task_id = _slug(task_description)
         destination = root_parent / task_id
         suffix = 1
         while destination.exists():
             destination = root_parent / f"{task_id}-{suffix}"
             suffix += 1
+        source = Path(source_path).expanduser().resolve() if source_path else None
+        if direct_source:
+            if source is None or not source.is_dir():
+                raise ValueError(
+                    "Direct workspace access requires an existing project directory."
+                )
+            from ..sandbox import SandboxManager
+
+            allowed_root = SandboxManager.root_dir.resolve()
+            if not source.is_relative_to(allowed_root):
+                raise PermissionError(
+                    "Direct workspace access must stay inside the workspace "
+                    "selected at session start."
+                )
+            from . import console
+
+            console.print(
+                f"[yellow]Directly editing the user-selected workspace: {source}. "
+                "No isolated copy or automatic Git commits will be used.[/yellow]"
+            )
+            return cls(
+                source,
+                task_id,
+                False,
+                source,
+                direct_source=True,
+                allow_network=allow_network,
+            )
+
+        root_parent.mkdir(parents=True, exist_ok=True)
         destination.mkdir()
 
-        source = Path(source_path).expanduser().resolve() if source_path else None
         if source:
             if (
                 not source.is_dir()
@@ -66,6 +113,7 @@ class CodeTaskWorkspace:
                     ignore=_copy_ignore,
                     symlinks=True,
                 )
+                _remove_copied_symlinks(destination)
             except Exception:
                 shutil.rmtree(destination)
                 raise
@@ -165,7 +213,13 @@ class CodeTaskWorkspace:
                 encoding="utf-8",
             )
 
-        workspace = cls(destination, task_id, True, source)
+        workspace = cls(
+            destination,
+            task_id,
+            True,
+            source,
+            allow_network=allow_network,
+        )
         if source:
             checkpoint = workspace._commit_paths(
                 [".gitignore", *workspace._candidate_paths(include_all=True)],

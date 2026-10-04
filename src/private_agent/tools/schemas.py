@@ -1,6 +1,6 @@
 """Argument schemas for built-in tool calls."""
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -33,6 +33,65 @@ class ListDirInput(BaseModel):
     dir_path: str = Field(default=".", description="Directory path to list files from.")
 
 
+class SearchWorkspaceFilesInput(BaseModel):
+    pattern: str = Field(
+        ...,
+        min_length=1,
+        max_length=256,
+        description="Workspace-relative glob pattern such as '**/*.py' or '*.toml'.",
+    )
+    directory: str = Field(default=".", max_length=1024)
+    limit: int = Field(default=100, ge=1, le=200)
+
+
+class SearchWorkspaceTextInput(BaseModel):
+    query: str = Field(..., min_length=1, max_length=500)
+    directory: str = Field(default=".", max_length=1024)
+    pattern: str = Field(default="*", min_length=1, max_length=256)
+    limit: int = Field(default=50, ge=1, le=100)
+
+
+class SearchWorkspaceSymbolsInput(BaseModel):
+    symbol: str = Field(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Exact case-insensitive symbol name to locate in source declarations.",
+    )
+    directory: str = Field(default=".", max_length=1024)
+    pattern: str = Field(
+        default="*",
+        min_length=1,
+        max_length=256,
+        description="Workspace-relative glob, for example '**/*.py'.",
+    )
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class PreviewWorkspacePatchInput(BaseModel):
+    file_path: str = Field(..., max_length=1024)
+    old_text: str = Field(..., min_length=1, max_length=50_000)
+    new_text: str = Field(..., max_length=50_000)
+
+
+class ApplyWorkspacePatchInput(PreviewWorkspacePatchInput):
+    pass
+
+
+class RenameWorkspaceFileInput(BaseModel):
+    source_path: str = Field(..., min_length=1, max_length=1024)
+    destination_path: str = Field(..., min_length=1, max_length=1024)
+
+
+class DeleteWorkspaceFileInput(BaseModel):
+    file_path: str = Field(..., min_length=1, max_length=1024)
+
+
+class InspectWorkspaceGitInput(BaseModel):
+    action: Literal["status", "diff", "log", "branches"]
+    directory: str = Field(default=".", max_length=1024)
+
+
 class FetchWebpageInput(BaseModel):
     url: str = Field(..., description="HTTP or HTTPS URL to fetch content from.")
 
@@ -53,6 +112,92 @@ class DeleteSqliteHistoryInput(BaseModel):
     session_id: Optional[str] = Field(
         default=None,
         description="Specific session ID to delete, or leave empty/all to wipe.",
+    )
+
+
+class SearchSqliteHistoryInput(BaseModel):
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Literal text to search in locally stored messages and summaries.",
+    )
+    session_id: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description="Optionally restrict results to one session.",
+    )
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class DeleteSqliteHistoryEntryInput(BaseModel):
+    entry_id: int = Field(..., ge=1, description="Entry ID returned by local history search.")
+    session_id: str = Field(..., min_length=1, max_length=200)
+
+
+class TaskPlanStepInput(BaseModel):
+    step_id: str = Field(..., min_length=1, max_length=64)
+    description: str = Field(..., min_length=1, max_length=1000)
+    dependencies: list[str] = Field(default_factory=list, max_length=20)
+    validation: list[str] = Field(default_factory=list, max_length=10)
+    proof: list[str] = Field(default_factory=list, max_length=10)
+    risks: list[str] = Field(default_factory=list, max_length=10)
+    edge_cases: list[str] = Field(default_factory=list, max_length=10)
+
+
+class CreateTaskPlanInput(BaseModel):
+    goal: str = Field(..., min_length=1, max_length=2000)
+    task_type: Literal["research", "coding", "other"]
+    steps: list[TaskPlanStepInput] = Field(..., min_length=1, max_length=20)
+    assumptions: list[str] = Field(default_factory=list, max_length=10)
+    constraints: list[str] = Field(default_factory=list, max_length=10)
+    research_questions: list[str] = Field(default_factory=list, max_length=10)
+    research_references: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Runtime-injected citations from consented planning searches; do not invent.",
+    )
+
+
+class ReadTableSchemaInput(BaseModel):
+    table_name: Literal[
+        "agent_tasks",
+        "agent_plan_revisions",
+        "agent_todo_steps",
+        "agent_task_events",
+        "chat_history",
+        "agent_learned_items",
+        "agent_learning_settings",
+    ]
+
+
+class InspectTaskPlanInput(BaseModel):
+    task_id: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description="Omit to inspect the active task plan.",
+    )
+
+
+class UpdateTodoStepInput(BaseModel):
+    step_id: str = Field(..., min_length=1, max_length=64)
+    status: Literal["pending", "in_progress", "blocked", "reported_done"]
+    evidence: str = Field(default="", max_length=2000)
+
+
+class ReviseTaskPlanInput(BaseModel):
+    goal: str = Field(..., min_length=1, max_length=2000)
+    task_type: Literal["research", "coding", "other"]
+    expected_revision: int = Field(..., ge=1)
+    steps: list[TaskPlanStepInput] = Field(..., min_length=1, max_length=20)
+    assumptions: list[str] = Field(default_factory=list, max_length=10)
+    constraints: list[str] = Field(default_factory=list, max_length=10)
+    research_questions: list[str] = Field(default_factory=list, max_length=10)
+    research_references: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Runtime-injected citations from consented planning searches; do not invent.",
     )
 
 

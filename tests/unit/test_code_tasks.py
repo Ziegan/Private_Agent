@@ -198,6 +198,76 @@ def test_existing_code_workspace_copy_excludes_git_secrets_and_caches(tmp_path, 
     ).splitlines()
     assert "ignored.txt" not in tracked_files
 
+
+def test_code_workspace_copy_failure_preserves_source_and_removes_destination(
+    tmp_path, monkeypatch
+):
+    from private_agent import code_tasks
+
+    source = tmp_path / "source"
+    source.mkdir()
+    source_file = source / "app.py"
+    source_file.write_text("original\n", encoding="utf-8")
+    output_root = tmp_path / "projects"
+
+    def fail_copy(*args, **kwargs):
+        destination = pathlib.Path(args[1])
+        destination.mkdir(exist_ok=True)
+        (destination / "partial.py").write_text("partial", encoding="utf-8")
+        raise OSError("simulated copy failure")
+
+    monkeypatch.setattr(code_tasks.shutil, "copytree", fail_copy)
+    with pytest.raises(OSError, match="simulated copy failure"):
+        CodeTaskWorkspace.create(
+            "Modify source project",
+            str(output_root),
+            source_path=str(source),
+        )
+
+    assert source_file.read_text(encoding="utf-8") == "original\n"
+    assert list(output_root.iterdir()) == []
+
+
+def test_code_workspace_removes_symlinks_added_during_copy(
+    tmp_path, monkeypatch
+):
+    from private_agent import code_tasks
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.py").write_text("print('safe')\n", encoding="utf-8")
+    outside_file = tmp_path / "outside.txt"
+    outside_file.write_text("external data", encoding="utf-8")
+    outside_directory = tmp_path / "outside"
+    outside_directory.mkdir()
+    real_copytree = code_tasks.shutil.copytree
+
+    def copy_and_inject_links(*args, **kwargs):
+        result = real_copytree(*args, **kwargs)
+        destination = pathlib.Path(args[1])
+        (destination / "raced-file-link").symlink_to(outside_file)
+        (destination / "raced-directory-link").symlink_to(
+            outside_directory,
+            target_is_directory=True,
+        )
+        return result
+
+    monkeypatch.setattr(code_tasks.shutil, "copytree", copy_and_inject_links)
+    monkeypatch.setattr(code_tasks.shutil, "which", lambda executable: None)
+
+    workspace = CodeTaskWorkspace.create(
+        "Copy project without symlinks",
+        str(tmp_path / "projects"),
+        source_path=str(source),
+        confirm_without_git=lambda _reason: True,
+    )
+
+    assert workspace is not None
+    assert (workspace.root / "app.py").exists()
+    assert not (workspace.root / "raced-file-link").exists()
+    assert not (workspace.root / "raced-directory-link").exists()
+
+
 def test_code_task_blocks_manual_git_shell_commands(monkeypatch):
     from private_agent import code_tasks
 
@@ -213,8 +283,8 @@ def test_code_task_blocks_manual_git_shell_commands(monkeypatch):
     ("system", "available_tools", "message"),
     [
         ("Darwin", {"bwrap", "prlimit"}, "currently supported only on Linux"),
-        ("Linux", {"prlimit"}, "install Bubblewrap"),
-        ("Linux", {"bwrap"}, "install Bubblewrap"),
+        ("Linux", {"prlimit"}, "Bubblewrap"),
+        ("Linux", {"bwrap"}, "Bubblewrap"),
     ],
 )
 def test_isolated_command_fails_closed_when_isolation_is_unavailable(
@@ -231,6 +301,77 @@ def test_isolated_command_fails_closed_when_isolation_is_unavailable(
 
     with pytest.raises(RuntimeError, match=message):
         code_tasks._isolated_command(["python", "-c", "print('no fallback')"], tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("system", "available_tools", "expected"),
+    [
+        (
+            "Windows",
+            {"bwrap", "prlimit"},
+            "OS-level command isolation is currently supported only on Linux.",
+        ),
+        (
+            "Darwin",
+            {"bwrap", "prlimit"},
+            "OS-level command isolation is currently supported only on Linux.",
+        ),
+        (
+            "Linux",
+            {"prlimit"},
+            "Install Bubblewrap (bwrap) and util-linux (prlimit) for "
+            "filesystem, network, and resource isolation.",
+        ),
+        (
+            "Linux",
+            {"bwrap"},
+            "Install Bubblewrap (bwrap) and util-linux (prlimit) for "
+            "filesystem, network, and resource isolation.",
+        ),
+        ("Linux", {"bwrap", "prlimit"}, None),
+    ],
+)
+def test_isolation_readiness_reports_platform_without_raising(
+    monkeypatch, system, available_tools, expected
+):
+    import private_agent.code_tasks as code_tasks
+
+    monkeypatch.setattr(code_tasks.platform, "system", lambda: system)
+    monkeypatch.setattr(
+        code_tasks.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name in available_tools else None,
+    )
+
+    assert (
+        code_tasks.isolation_unavailable_reason()
+        == expected
+    )
+
+
+def test_isolated_command_shares_network_only_when_explicitly_enabled(
+    monkeypatch, tmp_path
+):
+    import private_agent.code_tasks as code_tasks
+
+    monkeypatch.setattr(code_tasks.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        code_tasks.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}",
+    )
+
+    isolated, _ = code_tasks._isolated_command(["python", "-V"], tmp_path)
+    connected, _ = code_tasks._isolated_command(
+        ["python", "-V"],
+        tmp_path,
+        allow_network=True,
+    )
+
+    assert "--unshare-all" in isolated
+    assert "--share-net" not in isolated
+    assert "--unshare-all" in connected
+    assert "--share-net" in connected
 
 
 @pytest.mark.skipif(
@@ -281,6 +422,27 @@ def test_generated_project_test_command_isolated_from_host_files(tmp_path):
         assert result.returncode == 0, result.stderr
         assert (project / "allowed.txt").read_text(encoding="utf-8") == "workspace is writable"
         assert not host_write.exists()
+        network_command, network_environment = _isolated_command(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import socket, sys; "
+                    "s=socket.socket(); "
+                    f"sys.exit(0 if s.connect_ex(('127.0.0.1', {host_port})) == 0 else 1)"
+                ),
+            ],
+            project,
+            allow_network=True,
+        )
+        network_result = subprocess.run(
+            network_command,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env=network_environment,
+        )
+        assert network_result.returncode == 0, network_result.stderr
     finally:
         host_listener.close()
 
@@ -301,7 +463,7 @@ def test_project_runner_runs_all_detected_suites_after_failure(tmp_path, monkeyp
         subprocess.CompletedProcess([], 1, "", "python suite failed"),
         subprocess.CompletedProcess([], 0, "npm suite passed", ""),
     ])
-    monkeypatch.setattr(code_tasks, "_isolated_command", lambda command, root: (
+    monkeypatch.setattr(code_tasks, "_isolated_command", lambda command, root, **_kwargs: (
         commands.append(list(command)) or list(command),
         {"PATH": "/usr/bin"},
     ))
@@ -348,7 +510,7 @@ def test_project_runner_reports_missing_runner_and_timeout(tmp_path, monkeypatch
     monkeypatch.setattr(
         code_tasks,
         "_isolated_command",
-        lambda command, root: (list(command), {"PATH": "/usr/bin"}),
+        lambda command, root, **_kwargs: (list(command), {"PATH": "/usr/bin"}),
     )
     monkeypatch.setattr(
         code_tasks.subprocess,
@@ -358,6 +520,258 @@ def test_project_runner_reports_missing_runner_and_timeout(tmp_path, monkeypatch
         ),
     )
     assert "timed out after 180 seconds" in workspace.run_tests()
+
+
+def test_project_runner_executes_configured_argv_inside_sandbox(tmp_path, monkeypatch):
+    import private_agent.code_tasks as code_tasks
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "test_custom.feature").write_text("scenario\n", encoding="utf-8")
+    workspace = CodeTaskWorkspace(project, "project", False)
+    commands = []
+    isolated = []
+    from private_agent.code_tasks import testing
+
+    monkeypatch.setattr(
+        testing,
+        "CODE_TASK_TEST_COMMANDS",
+        [["custom-test", "--suite", "feature suite"]],
+    )
+
+    def isolate(command, root, **_kwargs):
+        isolated.append(root)
+        return ["/usr/bin/bwrap", "--", *command], {"PATH": "/usr/bin"}
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "custom tests passed", "")
+
+    monkeypatch.setattr(code_tasks, "_isolated_command", isolate)
+    monkeypatch.setattr(
+        code_tasks.shutil,
+        "which",
+        lambda binary: "/usr/bin/custom-test" if binary == "custom-test" else None,
+    )
+    monkeypatch.setattr(code_tasks.subprocess, "run", run)
+
+    result = workspace.run_tests()
+
+    assert result.startswith("Tests passed:")
+    assert commands == [
+        ["/usr/bin/bwrap", "--", "custom-test", "--suite", "feature suite"]
+    ]
+    assert isolated == [project]
+
+
+def test_direct_workspace_access_does_not_copy_or_create_git(tmp_path, monkeypatch):
+    import private_agent.sandbox as sandbox
+
+    selected_root = tmp_path / "selected"
+    selected_root.mkdir()
+    output_root = tmp_path / "generated"
+    monkeypatch.setattr(sandbox.SandboxManager, "root_dir", selected_root)
+
+    workspace = CodeTaskWorkspace.create(
+        "modify selected workspace",
+        str(output_root),
+        source_path=str(selected_root),
+        direct_source=True,
+        allow_network=True,
+    )
+
+    assert workspace is not None
+    assert workspace.root == selected_root
+    assert workspace.direct_source is True
+    assert workspace.git_enabled is False
+    assert workspace.allow_network is True
+    assert not output_root.exists()
+
+
+def test_checkpoint_surfaces_git_commit_failure_without_claiming_success(
+    tmp_path, monkeypatch
+):
+    from private_agent.code_tasks import checkpoints
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text("value = 1\n", encoding="utf-8")
+    (project / "tests").mkdir()
+    (project / "tests" / "test_app.py").write_text(
+        "def test_value():\n    assert True\n", encoding="utf-8"
+    )
+    workspace = CodeTaskWorkspace(project, "project", True)
+    monkeypatch.setattr(
+        workspace, "_candidate_paths", lambda: ["app.py", "tests/test_app.py"]
+    )
+    monkeypatch.setattr(workspace, "_run_tests", lambda: "Tests passed:\n2 tests")
+    calls = []
+
+    def fail_commit(root, *args):
+        calls.append(args)
+        if "commit" in args and "-m" in args:
+            return subprocess.CompletedProcess(
+                ["git", *args], 1, "", "simulated commit failure"
+            )
+        if args[:2] == ("diff", "--cached"):
+            if args[2:] == ("--name-only", "-z"):
+                return subprocess.CompletedProcess(
+                    ["git", *args], 0, "app.py\0tests/test_app.py\0", ""
+                )
+            return subprocess.CompletedProcess(["git", *args], 0, "", "")
+        return subprocess.CompletedProcess(["git", *args], 0, "", "")
+
+    result = checkpoints.commit_paths(
+        workspace,
+        ["app.py", "tests/test_app.py"],
+        "task project: feature",
+        require_test=True,
+        run_git=fail_commit,
+    )
+
+    assert result == "Error creating local checkpoint: simulated commit failure"
+    assert not result.startswith("Checkpoint committed")
+    assert any("task project: feature" in args for args in calls)
+
+
+def test_checkpoint_surfaces_git_status_failure(tmp_path):
+    from private_agent.code_tasks import checkpoints
+
+    project = tmp_path / "project"
+    project.mkdir()
+    workspace = CodeTaskWorkspace(project, "project", True)
+
+    def fail_status(root, *args):
+        assert args[:2] == ("status", "--porcelain")
+        return subprocess.CompletedProcess(
+            ["git", *args], 1, "", "status unavailable"
+        )
+
+    result = checkpoints.commit_paths(
+        workspace,
+        ["app.py"],
+        "task project: feature",
+        require_test=False,
+        run_git=fail_status,
+    )
+
+    assert result == "Error: Could not inspect project Git status."
+
+
+@pytest.mark.parametrize(
+    ("failure_stage", "expected"),
+    [
+        ("add", "Error staging files: staging refused"),
+        ("head", "Error: Commit command succeeded but its commit ID could not be verified."),
+    ],
+)
+def test_checkpoint_surfaces_staging_and_post_commit_verification_failures(
+    tmp_path, monkeypatch, failure_stage, expected
+):
+    from private_agent.code_tasks import checkpoints
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text("value = 1\n", encoding="utf-8")
+    (project / "tests").mkdir()
+    (project / "tests" / "test_app.py").write_text(
+        "def test_value():\n    assert True\n", encoding="utf-8"
+    )
+    workspace = CodeTaskWorkspace(project, "project", True)
+    monkeypatch.setattr(
+        workspace, "_candidate_paths", lambda: ["app.py", "tests/test_app.py"]
+    )
+    monkeypatch.setattr(workspace, "_run_tests", lambda: "Tests passed:\n2 tests")
+
+    def fake_git(root, *args):
+        if args[:1] == ("add",):
+            code, error = (
+                (1, "staging refused") if failure_stage == "add" else (0, "")
+            )
+            return subprocess.CompletedProcess(["git", *args], code, "", error)
+        if args[:2] == ("diff", "--cached"):
+            if args[2:] == ("--name-only", "-z"):
+                return subprocess.CompletedProcess(
+                    ["git", *args], 0, "app.py\0tests/test_app.py\0", ""
+                )
+            return subprocess.CompletedProcess(["git", *args], 0, "", "")
+        if "commit" in args:
+            return subprocess.CompletedProcess(["git", *args], 0, "", "committed")
+        if args[:2] == ("rev-parse", "HEAD"):
+            code = 1 if failure_stage == "head" else 0
+            return subprocess.CompletedProcess(
+                ["git", *args], code, "" if code else "commit-id", ""
+            )
+        return subprocess.CompletedProcess(["git", *args], 0, "", "")
+
+    result = checkpoints.commit_paths(
+        workspace,
+        ["app.py", "tests/test_app.py"],
+        "task project: feature",
+        require_test=True,
+        run_git=fake_git,
+    )
+
+    assert result == expected
+    assert "Checkpoint committed" not in result
+
+
+@pytest.mark.parametrize("failure_stage", ["status", "diff-check"])
+def test_finalize_surfaces_git_status_and_staged_diff_failures(
+    tmp_path, monkeypatch, failure_stage
+):
+    from private_agent.code_tasks import checkpoints
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "app.py").write_text("value = 1\n", encoding="utf-8")
+    (project / "tests").mkdir()
+    (project / "tests" / "test_app.py").write_text(
+        "def test_value():\n    assert True\n", encoding="utf-8"
+    )
+    workspace = CodeTaskWorkspace(project, "project", True)
+    monkeypatch.setattr(workspace, "_run_tests", lambda: "Tests passed:\n2 tests")
+    calls = []
+
+    def fail_candidate_paths():
+        raise RuntimeError("Git status could not be inspected.")
+
+    if failure_stage == "status":
+        monkeypatch.setattr(workspace, "_candidate_paths", fail_candidate_paths)
+
+        def run_git(root, *args):
+            calls.append(args)
+            raise AssertionError("Git commands must not follow status failure")
+    else:
+        monkeypatch.setattr(
+            workspace, "_candidate_paths", lambda: ["app.py", "tests/test_app.py"]
+        )
+
+        def run_git(root, *args):
+            calls.append(args)
+            if args[:1] == ("ls-files",):
+                return subprocess.CompletedProcess(["git", *args], 0, "", "")
+            if args[:1] == ("add",):
+                return subprocess.CompletedProcess(["git", *args], 0, "", "")
+            if args[:2] == ("diff", "--cached"):
+                if args[2:] == ("--name-only", "-z"):
+                    return subprocess.CompletedProcess(
+                        ["git", *args], 0, "app.py\0tests/test_app.py\0", ""
+                    )
+                return subprocess.CompletedProcess(
+                    ["git", *args], 1, "", "trailing whitespace"
+                )
+            raise AssertionError(f"Unexpected Git command: {args}")
+
+    result = checkpoints.finalize(workspace, run_git=run_git)
+
+    if failure_stage == "status":
+        assert result == "Final checkpoint failed: Git status could not be inspected."
+        assert calls == []
+    else:
+        assert result == "Error: Staged diff check failed: trailing whitespace"
+        assert ("commit",) not in calls
+
 
 def test_autonomous_error_reflection_simulation():
     tool_error_result = "Error: File 'nonexistent.py' not found."

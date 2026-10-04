@@ -43,10 +43,10 @@ async def load_configured_mcp_tools(server_name: str, server_config: dict) -> li
         "stdio",
         "sse",
         "streamable_http",
-        "websocket",
     }:
         raise ValueError(
-            f"MCP server '{server_name}' has unsupported transport '{transport}'."
+            f"MCP server '{server_name}' has unsupported transport '{transport}'; "
+            "use stdio, sse, or streamable_http."
         )
     if transport == "stdio":
         if not isinstance(server_config.get("command"), str) or not server_config["command"].strip():
@@ -67,10 +67,8 @@ async def load_configured_mcp_tools(server_name: str, server_config: dict) -> li
                 f"MCP stdio server '{server_name}' env must contain string values."
             )
     normalized_config = dict(server_config)
-    supported_schemes = (
-        {"ws", "wss"} if transport == "websocket" else {"http", "https"}
-    )
-    if transport in {"sse", "streamable_http", "websocket"}:
+    supported_schemes = {"http", "https"}
+    if transport in {"sse", "streamable_http"}:
         url = server_config.get("url")
         parsed = urllib.parse.urlsplit(url) if isinstance(url, str) else None
         if (
@@ -102,7 +100,7 @@ async def load_configured_mcp_tools(server_name: str, server_config: dict) -> li
                     f"MCP server '{server_name}' {timeout_key} must be between "
                     "0.1 and 120 seconds."
                 )
-    if transport in {"sse", "streamable_http", "websocket"}:
+    if transport in {"sse", "streamable_http"}:
         try:
             normalized_config["url"] = validate_explicit_service_url(
                 server_config["url"], supported_schemes
@@ -142,8 +140,8 @@ async def load_configured_mcp_tools(server_name: str, server_config: dict) -> li
         sandbox_environment.update(server_config.get("env") or {})
         normalized_config["env"] = sandbox_environment
         normalized_config.pop("cwd", None)
-    client = MultiServerMCPClient({server_name: normalized_config})
     try:
+        client = MultiServerMCPClient({server_name: normalized_config})
         server_tools = await client.get_tools(server_name=server_name)
     except Exception as exc:
         if sandbox_dir is not None:

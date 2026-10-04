@@ -31,8 +31,13 @@ def estimate_context_window(
     chat_history: list,
     current_input: str,
     max_context: int = MAX_CONTEXT_TOKENS,
+    system_prompts: list | None = None,
 ) -> dict:
     total_chars = len(current_input)
+    system_text = "\n".join(
+        str(message.content) for message in (system_prompts or [])
+    )
+    total_chars += len(system_text)
     for message in chat_history:
         content = message.content
         content_text = (
@@ -47,7 +52,8 @@ def estimate_context_window(
         try:
             estimated_tokens = len(
                 encoding.encode(
-                    current_input
+                    system_text
+                    + current_input
                     + "".join(str(message.content) for message in chat_history)
                 )
             )
@@ -110,6 +116,21 @@ def token_count(text: str) -> int:
         return max(1, len(text) // 4)
 
 
+def calculate_prompt_budgets(
+    system_prompts: list,
+    context_window: int,
+    max_output_tokens: int,
+) -> tuple[int, int]:
+    """Reserve context for system instructions and generation before user context."""
+    output_budget = min(max_output_tokens, max(1, context_window // 3))
+    system_text = "\n".join(str(message.content) for message in system_prompts)
+    safety_margin = max(16, context_window // 100)
+    input_budget = (
+        context_window - token_count(system_text) - output_budget - safety_margin
+    )
+    return max(0, input_budget), output_budget
+
+
 def _truncate_to_tokens(text: str, budget: int) -> str:
     if budget <= 0 or not text:
         return ""
@@ -131,6 +152,24 @@ def build_bounded_user_input(
 ) -> str:
     prefix = f"{context_label}:\n"
     suffix = f"\n\n[User Query]: {user_input}"
+    query_prefix = f"{prefix}\n\n[User Query]: "
+    if token_count(query_prefix) > budget:
+        bounded_query = _truncate_to_tokens(user_input, budget)
+        while token_count(bounded_query) > budget and bounded_query:
+            bounded_query = _truncate_to_tokens(
+                bounded_query, max(0, token_count(bounded_query) - 1)
+            )
+        return bounded_query
+    if token_count(query_prefix + user_input) > budget:
+        query_budget = max(0, budget - token_count(query_prefix))
+        bounded_query = _truncate_to_tokens(user_input, query_budget)
+        result = query_prefix + bounded_query
+        while token_count(result) > budget and bounded_query:
+            bounded_query = _truncate_to_tokens(
+                bounded_query, max(0, token_count(bounded_query) - 1)
+            )
+            result = query_prefix + bounded_query
+        return result
     remaining = max(0, budget - token_count(prefix + suffix) - 8)
     rag_budget = min(remaining, max(0, int(remaining * 0.7)))
     bounded_rag = _truncate_to_tokens(rag_context, rag_budget)
@@ -150,4 +189,3 @@ def build_bounded_user_input(
             return prefix + suffix
         result = f"{prefix}{bounded_episodic}\n{bounded_rag}{suffix}"
     return result
-
