@@ -134,6 +134,19 @@ def select_permission_mode(
     return modes.get(selection, configured)
 
 
+def _request_summary(tool_name: str, tool_args: dict[str, Any]) -> str:
+    if tool_name == "fetch_current_location":
+        return "approximate location lookup from this machine's public IP address"
+    if tool_name == "get_weather":
+        place = tool_args.get("location") or "current location (public IP lookup)"
+        return f"weather for {place} on {tool_args.get('date') or 'today'}"
+    return (
+        tool_args.get("query")
+        or tool_args.get("url")
+        or "request details unavailable"
+    )
+
+
 async def authorize_network_research(
     tool_name: str,
     tool_args: dict[str, Any],
@@ -188,11 +201,7 @@ async def authorize_network_research(
     if needs_session_consent or needs_per_request_consent:
         if not is_interactive():
             return False, "Online search requires interactive user consent."
-        request_summary = (
-            tool_args.get("query")
-            or tool_args.get("url")
-            or "request details unavailable"
-        )
+        request_summary = _request_summary(tool_name, tool_args)
         choice = console.input(
             f"[yellow]'{tool_name}' will send this to an external service: "
             f"{request_summary}\nProceed? \\[y/N]: [/yellow]"
@@ -204,11 +213,7 @@ async def authorize_network_research(
     elif permission_mode == "manual":
         if not is_interactive():
             return False, "Online search requires interactive user approval."
-        request_summary = (
-            tool_args.get("query")
-            or tool_args.get("url")
-            or "request details unavailable"
-        )
+        request_summary = _request_summary(tool_name, tool_args)
         choice = console.input(
             f"[yellow]Approve this '{tool_name}' action for the current request: "
             f"{request_summary}\nProceed? \\[y/N]: [/yellow]"

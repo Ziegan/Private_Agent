@@ -86,7 +86,15 @@ def check_internet_connection(
         return False
 
 
-NETWORK_TOOL_NAMES = frozenset({"web_search", "fetch_webpage", "download_web_file"})
+NETWORK_TOOL_NAMES = frozenset({
+    "web_search",
+    "fetch_webpage",
+    "download_web_file",
+    "fetch_current_location",
+    "get_weather",
+})
+# Reveal the machine's own location, so they are limited to local sessions.
+LOCAL_ONLY_NETWORK_TOOL_NAMES = frozenset({"fetch_current_location"})
 LOCAL_MEDIA_TOOL_NAMES = frozenset({
     "capture_webcam_image",
     "load_workspace_image",
@@ -359,6 +367,7 @@ def create_skill(name: str, description: str, instructions: str) -> str:
 
 # Import after network helpers are defined; web.py depends on this shared policy layer.
 from .web import download_web_file, fetch_webpage, web_search  # noqa: E402
+from .location import fetch_current_location, get_weather  # noqa: E402
 from .filesystem import (  # noqa: E402
     edit_local_file,
     apply_workspace_patch,
@@ -405,6 +414,8 @@ AVAILABLE_TOOLS = {
     "list_directory": list_directory,
     "fetch_webpage": fetch_webpage,
     "download_web_file": download_web_file,
+    "fetch_current_location": fetch_current_location,
+    "get_weather": get_weather,
     "read_chat_history_from_sqlite": read_chat_history_from_sqlite,
     "delete_chat_history_from_sqlite": delete_chat_history_from_sqlite,
     "search_chat_history_in_sqlite": search_chat_history_in_sqlite,

@@ -83,7 +83,12 @@ session continues where safe.
   inspection, patch preview/apply, rename/delete with snapshots, sandboxed
   shell (`run_shell_command`), SQLite history read/search/delete and schema
   lookup, task-plan create/inspect/update/revise, `create_skill`, local
-  date/time, `web_search`, `fetch_webpage`, `download_web_file`.
+  date/time, `web_search`, `fetch_webpage`, `download_web_file`,
+  `fetch_current_location` (Local provider only) and `get_weather` (forecast up to 16 days
+  ahead or history for a past date/week, optional hour). Both check for an active internet
+  connection first and follow the network consent policy. Privacy: `fetch_current_location` sends
+  this machine's public IP to ipwho.is (fallback ipapi.co) for city-level lookup, and `get_weather`
+  sends coordinates to Open-Meteo. Online sessions must pass a place name to `get_weather`.
 - **Local media**: workspace image and sampled video input, webcam capture,
   microphone recording and local Whisper / PCM-WAV transcription, each with
   per-use approval and model-capability checks.

@@ -87,6 +87,7 @@ from ..sandbox import SandboxManager
 from ..tools import (
     AVAILABLE_TOOLS,
     NETWORK_TOOL_NAMES,
+    LOCAL_ONLY_NETWORK_TOOL_NAMES,
     LOCAL_MEDIA_TOOL_NAMES,
     MCP_TOOL_NAMES,
     MCP_TOOL_SOURCES,
@@ -248,6 +249,22 @@ async def _maintain_task_lease(memory: PersistentMemory, session_id: str) -> Non
             )
 
 
+def _local_location_refusal(name: str, args: Any, local_session: bool) -> Optional[str]:
+    """Explain why a location-revealing call must not run, or None if allowed."""
+    if local_session:
+        return None
+    if name in LOCAL_ONLY_NETWORK_TOOL_NAMES:
+        return "Error: Current-location lookup requires the Local provider."
+    if name == "get_weather" and not (
+        isinstance(args, dict) and str(args.get("location") or "").strip()
+    ):
+        return (
+            "Error: Weather for the current location requires the Local "
+            "provider; ask the user for a place name and pass it as 'location'."
+        )
+    return None
+
+
 def _tool_unavailable_reason(
     name: str,
     *,
@@ -261,6 +278,8 @@ def _tool_unavailable_reason(
         not ENABLE_WEB_RESEARCH or WEB_RESEARCH_CONSENT == "never"
     ):
         return "Online research is disabled by configuration."
+    if name in LOCAL_ONLY_NETWORK_TOOL_NAMES and provider_type != "local":
+        return "Current-location lookup requires the Local provider."
     if name in LOCAL_MEDIA_TOOL_NAMES:
         if provider_type != "local":
             return "Local media tools require the Local provider."
@@ -2911,6 +2930,8 @@ async def execute_tool_call(
         and not media_capture_authorized
     ):
         result = "Error: Explicit media capture authorization was not provided."
+    elif _local_location_refusal(name, args, local_media_allowed):
+        result = _local_location_refusal(name, args, local_media_allowed)
     elif name in NETWORK_TOOL_NAMES and (
         not ENABLE_WEB_RESEARCH or WEB_RESEARCH_CONSENT == "never"
         or not network_authorized
@@ -4561,6 +4582,19 @@ Runtime context:
                                         )
                                     )
                                     continue
+                        location_refusal = _local_location_refusal(
+                            call_name,
+                            tool_call.get("args", {}),
+                            provider_type == "local",
+                        )
+                        if location_refusal:
+                            blocked_tool_messages.append(
+                                ToolMessage(
+                                    content=location_refusal,
+                                    tool_call_id=tool_call.get("id"),
+                                )
+                            )
+                            continue
                         if call_name in NETWORK_TOOL_NAMES:
                             tool_args = tool_call.get("args", {})
                             planning_search = planning_only and call_name == "web_search"

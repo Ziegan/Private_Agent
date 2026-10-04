@@ -29,6 +29,34 @@ class WebSearchInput(BaseModel):
     query: str = Field(..., description="Search query string.")
 
 
+class GetWeatherInput(BaseModel):
+    location: Optional[str] = Field(
+        default=None,
+        max_length=200,
+        description=(
+            "Place name such as 'Paris' or 'Chennai, India'. Omit to use the "
+            "current location (Local sessions only)."
+        ),
+    )
+    date: Optional[str] = Field(
+        default=None,
+        description=(
+            "First day as YYYY-MM-DD; defaults to today. Past dates return "
+            "history; up to 16 days ahead returns a forecast."
+        ),
+    )
+    time: Optional[str] = Field(
+        default=None,
+        description="Optional 24-hour HH:MM to also report that hour's conditions.",
+    )
+    days: int = Field(
+        default=1,
+        ge=1,
+        le=16,
+        description="Number of consecutive days from date (1-16); use 7 for a week.",
+    )
+
+
 class ListDirInput(BaseModel):
     dir_path: str = Field(default=".", description="Directory path to list files from.")
 
