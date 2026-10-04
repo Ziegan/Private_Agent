@@ -35,6 +35,7 @@ from ..config import (
     CODE_OUTPUT_ROOT,
     SKILLS_FOLDER_DEFAULT,
     RAG_DOCS_DEFAULT,
+    RAG_AUTO_REFRESH_SECONDS,
     RAG_INDEX_PATH,
     OVERRIDE_TOOL_LIST,
     MODEL_TEMPERATURE,
@@ -107,7 +108,11 @@ from ..tools import (
     clear_schema_reads,
     approved_tool_invocation,
 )
-from ..rag import initialize_knowledge_base, reset_knowledge_base
+from ..rag import (
+    initialize_knowledge_base,
+    knowledge_base_signature,
+    reset_knowledge_base,
+)
 from ..skills import (
     create_skill_file,
     load_skills_from_folder,
@@ -3250,6 +3255,8 @@ async def _run_agent_cli_session():
             bool(docs_input),
         )
     is_rag_active = vectorstore is not None
+    rag_signature = knowledge_base_signature(docs_input) if vectorstore else None
+    rag_last_check = time.monotonic()
 
     skills_folder_input = SKILLS_FOLDER_DEFAULT if SKILLS_FOLDER_DEFAULT else console.input("[cyan]Enter path to skills folder containing .md files (Press Enter for none): [/cyan]").strip()
     if (
@@ -4089,6 +4096,40 @@ async def _run_agent_cli_session():
                     )
                     if part
                 )
+
+                if (
+                    vectorstore
+                    and docs_input
+                    and RAG_AUTO_REFRESH_SECONDS
+                    and time.monotonic() - rag_last_check >= RAG_AUTO_REFRESH_SECONDS
+                ):
+                    rag_last_check = time.monotonic()
+                    try:
+                        current_signature = knowledge_base_signature(docs_input)
+                        if current_signature != rag_signature:
+                            console.print(
+                                "[cyan][RAG][/cyan] Knowledge-base changes detected; "
+                                "updating the index..."
+                            )
+                            refreshed = await asyncio.to_thread(
+                                initialize_knowledge_base,
+                                docs_input,
+                                index_path=RAG_INDEX_PATH,
+                            )
+                            if refreshed is not None:
+                                vectorstore = refreshed
+                                rag_signature = current_signature
+                                console.print("[green][RAG][/green] Index updated.")
+                            else:
+                                console.print(
+                                    "[yellow][RAG] Update failed; keeping the "
+                                    "previous index.[/yellow]"
+                                )
+                    except Exception as exc:
+                        console.print(
+                            f"[yellow][RAG] Auto-update skipped "
+                            f"({type(exc).__name__}): {exc}[/yellow]"
+                        )
 
                 if vectorstore and include_private_context:
                     rag_search_started = time.monotonic()

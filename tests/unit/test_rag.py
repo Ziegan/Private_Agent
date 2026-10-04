@@ -1,3 +1,4 @@
+import os
 import pytest
 import pathlib
 import json
@@ -554,3 +555,90 @@ def test_hybrid_rag_selects_top_bm25_candidates_without_full_sort():
     results = retriever.similarity_search("query", k=2)
 
     assert results == [documents[1], documents[2]]
+
+
+def _capture_indexing(monkeypatch):
+    captured = []
+
+    class RecordingStore:
+        @classmethod
+        def from_documents(cls, docs, embeddings, **kwargs):
+            captured.extend(docs)
+            return MagicMock()
+
+    monkeypatch.setattr(
+        "private_agent.rag.indexing.OllamaEmbeddings", lambda **kwargs: object()
+    )
+    monkeypatch.setattr("private_agent.rag.indexing.Chroma", RecordingStore)
+    return captured
+
+
+def test_rag_follows_symlinks_and_indexes_hardlinks_once(tmp_path, monkeypatch):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "linked.txt").write_text("outside symlink content", encoding="utf-8")
+    (outside / "tree").mkdir()
+    (outside / "tree" / "deep.md").write_text("deep linked content", encoding="utf-8")
+    (docs / "file_link.txt").symlink_to(outside / "linked.txt")
+    (docs / "dir_link").symlink_to(outside / "tree", target_is_directory=True)
+    (docs / "loop").symlink_to(docs, target_is_directory=True)
+    (docs / "real.txt").write_text("real content", encoding="utf-8")
+    os.link(docs / "real.txt", docs / "hard.txt")
+    captured = _capture_indexing(monkeypatch)
+
+    assert initialize_knowledge_base(
+        str(docs), index_path=str(tmp_path / "index")
+    ) is not None
+
+    texts = sorted(doc.page_content for doc in captured)
+    assert texts == [
+        "deep linked content",
+        "outside symlink content",
+        "real content",
+    ]
+
+
+def test_rag_indexes_sqlite_databases_read_only(tmp_path, monkeypatch):
+    import sqlite3
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    db_path = docs / "people.sqlite"
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE people (name TEXT, note TEXT, data BLOB)")
+    connection.execute("INSERT INTO people VALUES ('Ada', 'mathematician', x'00ff')")
+    connection.commit()
+    connection.close()
+    (docs / "fake.db").write_text("not a database", encoding="utf-8")
+    captured = _capture_indexing(monkeypatch)
+
+    assert initialize_knowledge_base(
+        str(docs), index_path=str(tmp_path / "index")
+    ) is not None
+
+    assert len(captured) == 1
+    content = captured[0].page_content
+    assert "SQLite table people" in content
+    assert "name=Ada" in content and "note=mathematician" in content
+    assert "<blob 2 bytes>" in content
+
+
+def test_knowledge_base_signature_changes_with_new_or_updated_files(tmp_path):
+    from private_agent.rag import knowledge_base_signature
+
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    first = docs / "a.txt"
+    first.write_text("one", encoding="utf-8")
+    baseline = knowledge_base_signature(str(docs))
+    assert knowledge_base_signature(str(docs)) == baseline
+
+    (docs / "b.md").write_text("two", encoding="utf-8")
+    after_add = knowledge_base_signature(str(docs))
+    assert after_add != baseline
+
+    first.write_text("one changed", encoding="utf-8")
+    assert knowledge_base_signature(str(docs)) != after_add
+    assert knowledge_base_signature(str(tmp_path / "missing")) is None

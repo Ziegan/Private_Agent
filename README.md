@@ -91,7 +91,12 @@ session continues where safe.
   helpers and project test commands run in a Bubblewrap/`prlimit` sandbox
   (Linux), re-run after fixes until they pass, with test-output limits.
 - **Local RAG**: ChromaDB vector store plus BM25 keyword retrieval, PDF/text
-  chunking with overlap, size/page/document caps, citations, status, list,
+  chunking with overlap, SQLite databases (`.db`, `.sqlite`, `.sqlite3`,
+  `.db3`; opened read-only, rows rendered per table), symlinked, soft- and
+  hard-linked files and folders (hard links and duplicate targets are indexed
+  once; link loops are skipped), automatic index updates when files are added,
+  changed or removed under the RAG path (checked before each request, at most
+  every `rag.auto_refresh_seconds`), size/page/document caps, citations, status, list,
   reindex and reset via `/maintenance`.
 - **Skills**: Markdown skills with relevance matching, a per-skill tool
   budget, `/skills` listing and explicit selection with auto-completion, and
@@ -216,6 +221,34 @@ earlier); lower latency is better. Results depend on the embedding model,
 chunk settings (`rag.*`) and machine load. Embeddings go to the configured
 `ollama_base_url`, so use a local server if the data must stay on this machine.
 
+## Supported RAG Document and File Types
+
+Files under `paths.rag_documents` (or the folder you enter at startup) are
+indexed when their extension is in this list (case-insensitive):
+
+| Type | Extensions | How it is read |
+| --- | --- | --- |
+| Plain text / Markdown | `.txt`, `.md` | UTF-8 text (undecodable bytes ignored) |
+| PDF | `.pdf` | Text extracted per page with `pypdf` (page numbers kept; scanned/image-only PDFs yield no text) |
+| Source code | `.py`, `.rs`, `.js`, `.ts` | Plain text |
+| Structured / web text | `.json`, `.csv`, `.html` | Plain text (not parsed or rendered) |
+| SQLite databases | `.db`, `.sqlite`, `.sqlite3`, `.db3` | Opened read-only; each table's rows are rendered as `column=value` text in batches of 10 rows, up to `rag.sqlite_max_rows_per_table` rows per table; BLOBs are summarised by size; files without a valid SQLite header are skipped |
+
+Other behaviour:
+
+- Folders are scanned recursively. Symlinked files and folders (including
+  targets outside the RAG folder) are followed, hard links and duplicate
+  targets are indexed once, and link loops are skipped.
+- Hidden files and folders (names starting with `.`) and unsupported
+  extensions (for example `.docx`, `.xlsx`, images) are ignored.
+- Limits: `rag.max_file_bytes` per file, `rag.max_corpus_bytes` in total,
+  `rag.max_pdf_pages` per PDF and `rag.max_documents` chunks; files over a limit
+  are skipped with a warning.
+- Text is split into `rag.chunk_size_chars` chunks with `rag.chunk_overlap_chars`
+  overlap, and each retrieved chunk is cited by source path (and page for PDFs).
+- The index updates automatically when files are added, changed or removed
+  (see `rag.auto_refresh_seconds`).
+
 ## Configuration Variables
 
 Settings live in `~/.private_agent.conf` (JSON). The block below shows the
@@ -286,7 +319,9 @@ values win on conflict.
     "max_documents": 20000,                           // Max indexed chunks/documents
     "chunk_size_chars": 1200,                         // Chunk size
     "chunk_overlap_chars": 200,                       // Chunk overlap
-    "similarity_results": 4                           // Candidates fetched per query
+    "similarity_results": 4,                          // Candidates fetched per query
+    "sqlite_max_rows_per_table": 5000,                // Rows indexed per table of an indexed SQLite file
+    "auto_refresh_seconds": 30                        // Min seconds between auto-update checks (0 = off)
   },
   "network": {
     "web_research_enabled": true,                     // Allow online research tools

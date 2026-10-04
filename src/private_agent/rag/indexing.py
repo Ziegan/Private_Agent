@@ -4,7 +4,10 @@ import json
 import hashlib
 import tempfile
 import shutil
+import sqlite3
+import stat as stat_module
 import uuid
+from urllib.parse import quote
 from datetime import datetime, timezone
 from typing import Optional, List, Callable
 from rich.console import Console
@@ -23,12 +26,151 @@ from ..config import (
     RAG_MAX_PDF_PAGES,
     RAG_CHUNK_SIZE_CHARS,
     RAG_CHUNK_OVERLAP_CHARS,
+    RAG_SQLITE_MAX_ROWS_PER_TABLE,
 )
 from ..hardware import ollama_acceleration_options
 from ..tools import ollama_langchain_client_kwargs, track_ollama_http_clients
 from .retrieval import HybridRAGRetriever
 
 console = Console()
+
+
+SQLITE_EXTENSIONS = frozenset({".db", ".sqlite", ".sqlite3", ".db3"})
+SUPPORTED_EXTENSIONS = frozenset(
+    {".pdf", ".txt", ".md", ".py", ".json", ".csv", ".rs", ".js", ".ts", ".html"}
+) | SQLITE_EXTENSIONS
+_SQLITE_HEADER = b"SQLite format 3\x00"
+_SQLITE_ROWS_PER_CHUNK = 10
+_SQLITE_MAX_CELL_CHARS = 200
+
+
+def _iter_source_files(root: pathlib.Path):
+    """Yield (path, stat) for supported files under root.
+
+    Symbolic links to files and directories are followed (targets may live
+    outside root). Hard links and symlinks that reach the same file are indexed
+    once, and directory cycles are not re-entered.
+    """
+    seen_directories = set()
+    seen_files = set()
+    for directory, subdirectories, filenames in os.walk(root, followlinks=True):
+        real_directory = os.path.realpath(directory)
+        if real_directory in seen_directories:
+            subdirectories[:] = []
+            continue
+        seen_directories.add(real_directory)
+        subdirectories[:] = sorted(
+            name for name in subdirectories if not name.startswith(".")
+        )
+        for name in sorted(filenames):
+            if name.startswith("."):
+                continue
+            if pathlib.Path(name).suffix.lower() not in SUPPORTED_EXTENSIONS:
+                continue
+            file_path = pathlib.Path(directory) / name
+            try:
+                file_stat = file_path.stat()
+            except OSError:
+                continue
+            if not stat_module.S_ISREG(file_stat.st_mode):
+                continue
+            identity = (file_stat.st_dev, file_stat.st_ino)
+            if identity in seen_files:
+                continue
+            seen_files.add(identity)
+            yield file_path, file_stat
+
+
+def _source_fingerprint(file_path: pathlib.Path, file_stat) -> dict:
+    size = file_stat.st_size
+    mtime_ns = file_stat.st_mtime_ns
+    if file_path.suffix.lower() in SQLITE_EXTENSIONS:
+        # Writes to a WAL-mode database may live only in the -wal file.
+        try:
+            wal_stat = file_path.with_name(file_path.name + "-wal").stat()
+            size += wal_stat.st_size
+            mtime_ns = max(mtime_ns, wal_stat.st_mtime_ns)
+        except OSError:
+            pass
+    return {"mtime_ns": mtime_ns, "size": size}
+
+
+def knowledge_base_signature(docs_path: Optional[str]) -> Optional[str]:
+    """Cheap digest of the indexable files' paths, sizes and mtimes."""
+    if not docs_path or not str(docs_path).strip():
+        return None
+    root = pathlib.Path(docs_path).expanduser().resolve()
+    if not root.is_dir():
+        return None
+    digest = hashlib.sha256()
+    for file_path, file_stat in _iter_source_files(root):
+        fingerprint = _source_fingerprint(file_path, file_stat)
+        digest.update(
+            f"{file_path}\0{fingerprint['mtime_ns']}\0{fingerprint['size']}\n".encode(
+                "utf-8", "surrogateescape"
+            )
+        )
+    return digest.hexdigest()
+
+
+def _sqlite_cell(value) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, (bytes, bytearray)):
+        return f"<blob {len(value)} bytes>"
+    text = str(value).replace("\n", " ")
+    if len(text) > _SQLITE_MAX_CELL_CHARS:
+        text = text[:_SQLITE_MAX_CELL_CHARS] + "..."
+    return text
+
+
+def _read_sqlite_pages(file_path: pathlib.Path) -> list:
+    """Render each table's rows as text batches using a read-only connection."""
+    with file_path.open("rb") as database_file:
+        if database_file.read(len(_SQLITE_HEADER)) != _SQLITE_HEADER:
+            raise ValueError("not a SQLite database file")
+    connection = sqlite3.connect(
+        f"file:{quote(str(file_path))}?mode=ro", uri=True, timeout=5
+    )
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        connection.text_factory = lambda raw: raw.decode("utf-8", "replace")
+        tables = [
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        pages = []
+        for table in tables:
+            quoted = '"' + table.replace('"', '""') + '"'
+            cursor = connection.execute(
+                f"SELECT * FROM {quoted} LIMIT ?", (RAG_SQLITE_MAX_ROWS_PER_TABLE,)
+            )
+            columns = [column[0] for column in cursor.description]
+            batch = []
+            rows_seen = 0
+            for row in cursor:
+                rows_seen += 1
+                batch.append(
+                    " | ".join(
+                        f"{column}={_sqlite_cell(value)}"
+                        for column, value in zip(columns, row)
+                    )
+                )
+                if len(batch) >= _SQLITE_ROWS_PER_CHUNK:
+                    pages.append((f"SQLite table {table}\n" + "\n".join(batch), None))
+                    batch = []
+            if batch:
+                pages.append((f"SQLite table {table}\n" + "\n".join(batch), None))
+            if not rows_seen:
+                pages.append(
+                    (f"SQLite table {table} (columns: {', '.join(columns)}; no rows)", None)
+                )
+        return pages
+    finally:
+        connection.close()
 
 
 def reset_knowledge_base(index_path: Optional[str] = None) -> str:
@@ -191,26 +333,12 @@ def initialize_knowledge_base(
     all_parsed_docs = []
     updated_state = {}
     failed_sources = set()
-    supported_exts = {".pdf", ".txt", ".md", ".py", ".json", ".csv", ".rs", ".js", ".ts", ".html"}
     total_source_bytes = 0
 
-    for file_path in sorted(path.glob("**/*.*")):
+    for file_path, stat in _iter_source_files(path):
         ext = file_path.suffix.lower()
-        if ext not in supported_exts or any(part.startswith(".") for part in file_path.relative_to(path).parts):
-            continue
-        
         try:
-            if file_path.is_symlink():
-                continue
-            resolved_file_path = file_path.resolve()
-            if not resolved_file_path.is_relative_to(path):
-                console.print(
-                    f"[yellow][Warning] Skipping file outside knowledge base: "
-                    f"{file_path}[/yellow]"
-                )
-                continue
-            stat = file_path.stat()
-            file_key = str(resolved_file_path)
+            file_key = str(file_path)
             if stat.st_size > RAG_MAX_FILE_BYTES:
                 console.print(
                     f"[yellow][Warning] Skipping {file_path.name}: file size "
@@ -226,7 +354,7 @@ def initialize_knowledge_base(
                 failed_sources.add(file_key)
                 continue
             total_source_bytes += stat.st_size
-            source_fingerprint = {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
+            source_fingerprint = _source_fingerprint(file_path, stat)
 
             if ext == ".pdf":
                 try:
@@ -247,6 +375,8 @@ def initialize_knowledge_base(
                     console.print(f"[yellow][Warning] pypdf not installed, skipping PDF: {file_path.name}[/yellow]")
                     failed_sources.add(file_key)
                     continue
+            elif ext in SQLITE_EXTENSIONS:
+                pages = _read_sqlite_pages(file_path)
             else:
                 pages = [(file_path.read_text(encoding="utf-8", errors="ignore"), None)]
 
@@ -277,7 +407,7 @@ def initialize_knowledge_base(
                 if file_key not in index_state or index_state[file_key] != source_fingerprint:
                     changed_docs.extend(file_docs)
         except Exception as e:
-            failed_sources.add(str(file_path.resolve()))
+            failed_sources.add(str(file_path))
             console.print(f"[yellow][Warning] Failed parsing {file_path.name}: {e}[/yellow]")
 
     state_write_started = False

@@ -87,6 +87,8 @@ DEFAULT_CONFIG = {
         "chunk_size_chars": 1200,
         "chunk_overlap_chars": 200,
         "similarity_results": 4,
+        "sqlite_max_rows_per_table": 5000,
+        "auto_refresh_seconds": 30,
     },
     "network": {
         "web_research_enabled": True,
@@ -525,6 +527,12 @@ RAG_MAX_DOCUMENTS = _positive_int("rag_max_documents", 20000)
 RAG_CHUNK_SIZE_CHARS = _configured_int("rag", "chunk_size_chars", 1200)
 RAG_CHUNK_OVERLAP_CHARS = _configured_int("rag", "chunk_overlap_chars", 200)
 RAG_SIMILARITY_RESULTS = _configured_int("rag", "similarity_results", 4)
+RAG_SQLITE_MAX_ROWS_PER_TABLE = _configured_int(
+    "rag", "sqlite_max_rows_per_table", 5000
+)
+RAG_AUTO_REFRESH_SECONDS = _configured_nonnegative_int(
+    "rag", "auto_refresh_seconds", 30
+)
 _raw_web_research = APP_CONFIG.get("enable_web_research", True)
 if isinstance(_raw_web_research, str):
     ENABLE_WEB_RESEARCH = _raw_web_research.lower() in ("true", "1", "yes", "on")
