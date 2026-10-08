@@ -27,6 +27,7 @@ from ..config import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+_SCHEMA_VERSION = 1
 
 
 class PersistentMemory:
@@ -215,6 +216,12 @@ class PersistentMemory:
     def _create_table(self):
         with self._lock:
             with self.conn:
+                version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+                if version > _SCHEMA_VERSION:
+                    raise sqlite3.DatabaseError(
+                        f"Database schema version {version} is newer than the "
+                        f"supported version {_SCHEMA_VERSION}."
+                    )
                 self.conn.execute("""
                     CREATE TABLE IF NOT EXISTS chat_history (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -440,6 +447,7 @@ class PersistentMemory:
                     "CREATE INDEX IF NOT EXISTS idx_agent_task_events_task "
                     "ON agent_task_events(task_id, created_at)"
                 )
+                self.conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     @staticmethod
     def _plan_digest(plan: dict) -> tuple[str, str]:

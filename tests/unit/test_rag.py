@@ -54,6 +54,43 @@ def test_context_budget_preserves_newest_messages():
     bounded = trim_history_to_context_budget(history, "question", 30)
     assert bounded == [history[-1]]
 
+
+def test_prompt_tokenizer_fallback_is_traceable_without_prompt_content(monkeypatch):
+    import private_agent.agent.prompts as prompts
+
+    events = []
+
+    class BrokenTokenizer:
+        def encode(self, _text):
+            raise ValueError("failure contained private user input")
+
+    monkeypatch.setattr(prompts, "_get_tokenizer", lambda: BrokenTokenizer())
+    monkeypatch.setattr(
+        prompts,
+        "_TOKENIZER_FALLBACKS_REPORTED",
+        set(),
+    )
+    monkeypatch.setattr(
+        prompts,
+        "log_event",
+        lambda _logger, event, **fields: events.append((event, fields)),
+    )
+
+    assert prompts.token_count("private user input") == 4
+    assert events == [
+        (
+            "prompt.tokenizer_fallback",
+            {
+                "level": prompts.logging.WARNING,
+                "stage": "count",
+                "error_type": "ValueError",
+                "fallback": "character_estimate",
+            },
+        )
+    ]
+    assert "private user input" not in repr(events)
+
+
 def test_context_budget_keeps_query_and_bounds_local_context():
     bounded = _build_bounded_user_input(
         "Local context",

@@ -369,7 +369,7 @@ async def test_media_tools_require_local_runtime_authorization(monkeypatch):
         "args": {"device_index": 0},
         "id": "camera-no-consent",
     })
-    assert "local Ollama session" in result.content
+    assert "local-model session" in result.content
     camera.invoke.assert_not_called()
 
     result = await agent.execute_tool_call(

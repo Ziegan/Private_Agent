@@ -70,6 +70,32 @@ def test_internet_probe_uses_per_call_timeout_without_global_socket_mutation():
         connect.assert_called_once()
         assert connect.call_args.kwargs["timeout"] == 0.25
 
+
+def test_outbound_client_close_failure_is_logged(monkeypatch):
+    events = []
+    client = MagicMock()
+    client.close.side_effect = OSError("close failed")
+    monkeypatch.setattr(network_tools, "_outbound_http_clients", [client])
+    monkeypatch.setattr(
+        network_tools,
+        "log_event",
+        lambda _logger, event, **fields: events.append((event, fields)),
+    )
+
+    asyncio.run(close_outbound_http_clients())
+
+    assert events == [
+        (
+            "network.client_close_failed",
+            {
+                "level": network_tools.logging.WARNING,
+                "client_type": "MagicMock",
+                "error_type": "OSError",
+            },
+        )
+    ]
+
+
 def test_outbound_url_rejects_local_and_credentialed_destinations():
     for url in (
         "http://127.0.0.1/admin",
@@ -886,6 +912,46 @@ def test_online_selection_uses_saved_url_and_key_when_accepted(monkeypatch):
     assert "saved-key" not in repr(selected)
 
 
+def test_online_selection_explicitly_uses_saved_details_without_key_prompt(
+    monkeypatch,
+):
+    agent, seen = _configured_online_setup(monkeypatch, ["1", "", "n", "n"])
+    key_prompt = MagicMock(side_effect=AssertionError("Saved key should be reused."))
+    monkeypatch.setattr(agent, "getpass", key_prompt)
+
+    selected = agent.select_online_model()
+
+    assert selected["model"] == "online-model"
+    assert seen["url"] == "https://saved.example.test/v1/models"
+    key_prompt.assert_not_called()
+
+
+def test_online_selection_loads_nested_saved_config_without_config_prompt(
+    monkeypatch,
+):
+    agent, seen = _configured_online_setup(monkeypatch, ["", "n", "n"])
+    agent.APP_CONFIG = {
+        "models": {
+            "online_base_url": "https://nested.example.test/v1",
+            "online_api_key": "nested-config-key",
+            "online_model": "configured-model",
+        }
+    }
+    key_prompt = MagicMock(
+        side_effect=AssertionError("Saved key must be used directly.")
+    )
+    monkeypatch.setattr(agent, "getpass", key_prompt)
+    input_prompt = agent.console.input
+    input_prompt.side_effect = ["", "n", "n"]
+
+    selected = agent.select_online_model(True)
+
+    assert selected["model"] == "online-model"
+    assert seen["url"] == "https://nested.example.test/v1/models"
+    key_prompt.assert_not_called()
+    assert len(input_prompt.call_args_list) == 3
+
+
 def test_online_selection_allows_manual_entry_over_saved_config(monkeypatch):
     agent, seen = _configured_online_setup(
         monkeypatch, ["n", "https://other.example.test/v1", "y", "", "n", "n"]
@@ -896,14 +962,23 @@ def test_online_selection_allows_manual_entry_over_saved_config(monkeypatch):
     assert seen["headers"]["Authorization"] == "Bearer typed-key"
 
 
-def test_online_permission_override_skips_tool_prompt_and_defaults_off(monkeypatch):
+def test_online_permission_override_can_consent_to_tool_call_limits(monkeypatch):
     from private_agent.config import DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG["models"]["online_permission_override"] is False
-    import private_agent.agent.runtime as agent
-
     # Prompts: share-context n, model id handled by listing "model-a" -> "" ; no tool prompt.
-    agent_mod, seen = _configured_online_setup(monkeypatch, ["", "", "n"])
+    agent_mod, seen = _configured_online_setup(monkeypatch, ["", "", "n", "y"])
     monkeypatch.setattr(agent_mod, "ONLINE_PERMISSION_OVERRIDE", True)
     selected = agent_mod.select_online_model()
     assert selected["allow_tools"] is True
+    assert selected["enforce_tool_call_limits"] is True
+
+
+def test_online_permission_override_can_decline_tool_call_limits(monkeypatch):
+    agent_mod, _seen = _configured_online_setup(monkeypatch, ["", "", "n", "n"])
+    monkeypatch.setattr(agent_mod, "ONLINE_PERMISSION_OVERRIDE", True)
+
+    selected = agent_mod.select_online_model()
+
+    assert selected["allow_tools"] is True
+    assert selected["enforce_tool_call_limits"] is False

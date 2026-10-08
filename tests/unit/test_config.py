@@ -137,6 +137,17 @@ def test_categorized_config_maps_legacy_flat_settings():
     assert merged["logging"]["debug_enabled"] == 1
 
 
+def test_categorized_online_api_key_has_legacy_runtime_alias():
+    import private_agent.config as config
+
+    merged = config._merge_config(
+        {"models": {"online_api_key": "configured-test-key"}}
+    )
+
+    assert merged["models"]["online_api_key"] == "configured-test-key"
+    assert merged["online_api_key"] == "configured-test-key"
+
+
 def test_merge_config_migrates_old_default_rag_and_skills_paths():
     import private_agent.config as config
 
@@ -290,9 +301,12 @@ def test_logging_console_adapter_installs_and_restores_module_consoles():
     )
 
 
-def test_debug_log_lines_have_timestamp_level_and_source_file(tmp_path, monkeypatch):
+def test_debug_log_records_are_structured_and_console_content_is_not_logged(
+    tmp_path,
+    monkeypatch,
+):
     import logging
-    import re
+    import json
 
     import private_agent.run_logging as run_logging
 
@@ -303,20 +317,52 @@ def test_debug_log_lines_have_timestamp_level_and_source_file(tmp_path, monkeypa
         log_path = run_logging.start_debug_logging()
         logging.getLogger("private_agent.database.memory").warning("module marker")
         run_logging.RUN_LOGGER.debug("debug marker")
+        run_logging.log_event(
+            run_logging.RUN_LOGGER,
+            "timing.sample",
+            first_token_seconds=0.25,
+            input_tokens=32,
+        )
         adapter = run_logging.LoggingConsoleAdapter(MagicMock())
         adapter.print("shown to user")
+        adapter._base.input.return_value = "private response"
+        assert adapter.input("private prompt") == "private response"
+        with run_logging.logging_context(task_id="task-42", operation="test"):
+            try:
+                raise ValueError("invalid password=hunter2")
+            except ValueError:
+                run_logging.RUN_LOGGER.exception("operation failed")
         run_logging.stop_debug_logging()
-        text = log_path.read_text(encoding="utf-8")
+        records = [
+            json.loads(line)
+            for line in log_path.read_text(encoding="utf-8").splitlines()
+        ]
     finally:
         run_logging.stop_debug_logging()
-    assert re.search(
-        r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} \| WARNING  \| "
-        r"private_agent\.database\.memory \| test_config\.py:\d+ \| .* \| module marker",
-        text,
-    )
-    assert "DEBUG    | private_agent.run | test_config.py" in text
-    assert "OUTPUT\nshown to user" in text
+    warning = next(record for record in records if record["message"] == "module marker")
+    assert warning["timestamp"].endswith("+00:00")
+    assert warning["level"] == "WARNING"
+    assert warning["logger"] == "private_agent.database.memory"
+    assert warning["source"]["file"] == "test_config.py"
+    assert isinstance(warning["source"]["line"], int)
+    assert warning["run_id"]
+    assert any(record["message"] == "debug marker" for record in records)
+    timing = next(record for record in records if record["event"] == "timing.sample")
+    assert timing["fields"] == {"first_token_seconds": 0.25, "input_tokens": 32}
+
+    failure = next(record for record in records if record["message"] == "operation failed")
+    assert failure["event"] == "log"
+    assert failure["context"] == {"task_id": "task-42", "operation": "test"}
+    assert failure["exception"]["type"] == "ValueError"
+    assert "ValueError: invalid password=[REDACTED]" in failure["exception"]["traceback"]
+    assert "hunter2" not in json.dumps(records)
+    assert "shown to user" not in json.dumps(records)
+    assert "private prompt" not in json.dumps(records)
+    assert "private response" not in json.dumps(records)
+    assert any(record["event"] == "console.output" for record in records)
+    assert any(record["event"] == "console.input_received" for record in records)
     adapter._base.print.assert_called_once_with("shown to user")
+    adapter._base.input.assert_called_once_with("private prompt")
 
 
 def test_debug_log_level_filters_and_terminal_stays_clean(tmp_path, monkeypatch, capsys):
@@ -338,3 +384,73 @@ def test_debug_log_level_filters_and_terminal_stays_clean(tmp_path, monkeypatch,
     assert "hidden info" not in text and "kept error" in text
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err == ""
+
+
+def test_debug_log_file_and_directory_permissions_are_private(tmp_path, monkeypatch):
+    import stat
+
+    import private_agent.run_logging as run_logging
+
+    monkeypatch.setattr(run_logging, "DEBUG_LOG_ENABLED", True)
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
+    try:
+        log_path = run_logging.start_debug_logging()
+        log_directory = log_path.parent
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(log_directory.stat().st_mode) == 0o700
+    finally:
+        run_logging.stop_debug_logging()
+
+
+def test_structured_exception_traceback_redacts_sensitive_tool_values():
+    import json
+    import logging
+    import sys
+
+    from private_agent.run_logging import JsonLineFormatter
+
+    secret = "private-tool-credential-value"
+    try:
+        raise RuntimeError(f"upstream service echoed {secret}")
+    except RuntimeError:
+        record = logging.LogRecord(
+            name="private_agent.tools",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=1,
+            msg="tool failed",
+            args=(),
+            exc_info=sys.exc_info(),
+        )
+        record.private_redactions = (secret,)
+
+    serialized = JsonLineFormatter().format(record)
+    parsed = json.loads(serialized)
+    assert secret not in serialized
+    assert "[REDACTED]" in parsed["exception"]["message"]
+    assert "[REDACTED]" in parsed["exception"]["traceback"]
+
+
+def test_debug_logging_repeated_start_does_not_duplicate_handlers(tmp_path, monkeypatch):
+    import json
+
+    import private_agent.run_logging as run_logging
+
+    monkeypatch.setattr(run_logging, "DEBUG_LOG_ENABLED", True)
+    monkeypatch.setattr(run_logging, "DEBUG_LOG_LEVEL", "INFO")
+    monkeypatch.setattr(pathlib.Path, "home", classmethod(lambda cls: tmp_path))
+    try:
+        first_path = run_logging.start_debug_logging()
+        second_path = run_logging.start_debug_logging()
+        run_logging.log_event(run_logging.RUN_LOGGER, "test.single_record")
+        run_logging.stop_debug_logging()
+        first_records = first_path.read_text(encoding="utf-8").splitlines()
+        second_records = [
+            json.loads(line)
+            for line in second_path.read_text(encoding="utf-8").splitlines()
+        ]
+    finally:
+        run_logging.stop_debug_logging()
+    assert first_path != second_path
+    assert len(first_records) == 1
+    assert sum(record["event"] == "test.single_record" for record in second_records) == 1

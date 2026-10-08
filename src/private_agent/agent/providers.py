@@ -1,7 +1,10 @@
 """Provider-independent validation and error formatting for model backends."""
 
+import logging
 from typing import Any, Callable, Dict, List, Optional, Sequence
 from urllib.parse import urlsplit, urlunsplit
+
+from ..run_logging import RUN_LOGGER, log_event
 
 
 def _response_field(response: Any, key: str, default: Any = None) -> Any:
@@ -41,6 +44,14 @@ def inspect_local_model_capabilities(
         client = client_factory(host=base_url, **client_kwargs())
         details = client.show(model_name)
     except Exception as exc:
+        log_event(
+            RUN_LOGGER,
+            "provider.local_capabilities_failed",
+            level=logging.WARNING,
+            model=model_name,
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
         console.print(
             f"[yellow][Model capabilities] Could not inspect {model_name}: {exc}[/yellow]"
         )
@@ -126,6 +137,44 @@ def create_local_chat_model(
     return model
 
 
+def create_openai_compatible_chat_model(
+    base_url: str,
+    model_name: str,
+    api_key: str,
+    *,
+    temperature: float,
+    request_timeout: float,
+    max_retries: int,
+    max_tokens: int,
+    chat_model_factory: Callable[..., Any],
+    sync_client_factory: Callable[..., Any],
+    async_client_factory: Callable[..., Any],
+) -> Any:
+    """Construct an OpenAI-compatible model with policy-controlled clients."""
+    http_client = sync_client_factory(
+        headers={},
+        timeout=request_timeout,
+        allow_loopback=True,
+    )
+    http_async_client = async_client_factory(
+        headers={},
+        timeout=request_timeout,
+        allow_loopback=True,
+        track=True,
+    )
+    return chat_model_factory(
+        model=model_name,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=temperature,
+        timeout=request_timeout,
+        max_retries=max_retries,
+        max_tokens=max_tokens,
+        http_client=http_client,
+        http_async_client=http_async_client,
+    )
+
+
 def create_robust_local_chat_model(
     primary_model_name: str,
     fallback_model_name: str,
@@ -163,6 +212,14 @@ def create_robust_local_chat_model(
             return model.bind_tools(list(tools)) if tools is not None else model
         except Exception as exc:
             last_error = exc
+            log_event(
+                RUN_LOGGER,
+                "provider.local_model_initialization_failed",
+                level=logging.WARNING,
+                model=model_name,
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
             console.print(
                 f"[yellow][Model fallback] {model_name} unavailable: {exc}[/yellow]"
             )
@@ -216,10 +273,11 @@ def online_request_failure(exc: Exception) -> str:
     if status_code is None:
         response = getattr(exc, "response", None)
         status_code = getattr(response, "status_code", None)
-    try:
-        status_code = int(status_code)
-    except (TypeError, ValueError):
-        status_code = None
+    if status_code is not None:
+        try:
+            status_code = int(status_code)
+        except (TypeError, ValueError):
+            status_code = None
     if status_code is None:
         return (
             f"Online request failed ({type(exc).__name__}); check connectivity, "
@@ -248,6 +306,15 @@ def online_request_failure(exc: Exception) -> str:
     )
 
 
+def has_saved_online_config(app_config: dict) -> bool:
+    """Return whether a non-empty API key is available in categorized or legacy config."""
+    models = app_config.get("models")
+    configured_key = models.get("online_api_key") if isinstance(models, dict) else None
+    if configured_key is None:
+        configured_key = app_config.get("online_api_key")
+    return isinstance(configured_key, str) and bool(configured_key.strip())
+
+
 def select_online_model(
     *,
     app_config: dict,
@@ -262,6 +329,9 @@ def select_online_model(
     public_sync_client: Callable[..., Any],
     model_factory: Callable[[str, str, str], Any],
     permission_override: bool = False,
+    use_saved_details: Optional[bool] = None,
+    max_tool_iterations: int,
+    max_tool_calls: int,
 ) -> Optional[dict]:
     """Collect session-only OpenAI-compatible settings after connectivity check."""
     if not is_interactive():
@@ -270,15 +340,44 @@ def select_online_model(
         )
         return None
 
-    configured_url = str(app_config.get("online_base_url", "https://api.openai.com/v1"))
-    configured_key = str(app_config.get("online_api_key") or "").strip()
-    use_configured = False
-    if configured_key:
+    model_config = app_config.get("models")
+    model_config = model_config if isinstance(model_config, dict) else {}
+    configured_url = str(
+        model_config.get(
+            "online_base_url",
+            app_config.get("online_base_url", "https://api.openai.com/v1"),
+        )
+    )
+    configured_key_value = model_config.get(
+        "online_api_key",
+        app_config.get("online_api_key"),
+    )
+    configured_key = (
+        configured_key_value.strip()
+        if isinstance(configured_key_value, str)
+        else ""
+    )
+    if use_saved_details is True and not configured_key:
+        console.print(
+            "[red]Saved online configuration was selected, but no API key is "
+            "configured. Choose manual entry or update the config file.[/red]"
+        )
+        return None
+    use_configured = use_saved_details is True
+    if use_saved_details is False:
+        use_configured = False
+    elif use_saved_details is None and configured_key:
         answer = console.input(
-            f"[cyan]A saved online provider is configured ({configured_url}, API key "
-            "hidden). Use it? [Y/n; n = enter a different URL and key]: [/cyan]"
+            f"[cyan]Online configuration: 1. Use saved details ({configured_url}; "
+            "key hidden), 2. Enter URL and key manually [1]: [/cyan]"
         ).strip().lower()
-        use_configured = answer in {"", "y", "yes"}
+        if answer in {"", "1", "y", "yes"}:
+            use_configured = True
+        elif answer in {"2", "n", "no"}:
+            use_configured = False
+        else:
+            console.print("[red]Choose 1 for saved details or 2 for manual entry.[/red]")
+            return None
 
     if use_configured:
         try:
@@ -340,6 +439,13 @@ def select_online_model(
             if isinstance(item, dict) and isinstance(item.get("id"), str)
         ]
     except httpx.HTTPStatusError as exc:
+        log_event(
+            RUN_LOGGER,
+            "provider.online_model_listing_failed",
+            level=logging.WARNING,
+            status_code=exc.response.status_code,
+            error_type=type(exc).__name__,
+        )
         if exc.response.status_code in {401, 403}:
             console.print(
                 "[red]Provider authentication failed while listing models. "
@@ -351,12 +457,22 @@ def select_online_model(
             f"{exc.response.status_code}); you can enter a model identifier manually.[/yellow]"
         )
     except Exception as exc:
+        log_event(
+            RUN_LOGGER,
+            "provider.online_model_listing_failed",
+            level=logging.WARNING,
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
         console.print(
             f"[yellow]Could not list provider models ({type(exc).__name__}); "
             "you can enter a model identifier manually.[/yellow]"
         )
 
-    configured_model = str(app_config.get("online_model") or "")
+    configured_model_value = model_config.get("online_model")
+    if configured_model_value is None:
+        configured_model_value = app_config.get("online_model")
+    configured_model = str(configured_model_value or "")
     if model_choices:
         console.print("[bold]Available API models:[/bold]")
         for index, candidate in enumerate(model_choices[:model_list_limit], 1):
@@ -404,9 +520,25 @@ def select_online_model(
             "and results will be sent to the provider. \\[y/N]: [/yellow]"
         ).strip().lower() == "y"
 
+    enforce_tool_call_limits = False
+    if allow_tools:
+        enforce_tool_call_limits = console.input(
+            "[yellow]Apply configured limits to this online model "
+            f"({max_tool_iterations} tool rounds and {max_tool_calls} tool calls "
+            "per request)? Choose No to leave counts uncapped; request time and "
+            "permission checks still apply. \\[y/N]: [/yellow]"
+        ).strip().lower() == "y"
+
     try:
         model = model_factory(base_url, model_name, api_key)
     except Exception as exc:
+        log_event(
+            RUN_LOGGER,
+            "provider.online_model_initialization_failed",
+            level=logging.ERROR,
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
         console.print(
             f"[red]Could not initialize online model ({type(exc).__name__}); "
             "check the endpoint, model, and key. Key details were not logged.[/red]"
@@ -418,6 +550,7 @@ def select_online_model(
         "base_url": base_url,
         "share_context": share_context,
         "allow_tools": allow_tools,
+        "enforce_tool_call_limits": enforce_tool_call_limits,
         "capabilities": online_capabilities(model, allow_tools),
     }
 
@@ -431,7 +564,14 @@ def online_capabilities(model, allow_tools: bool) -> dict:
     """
     try:
         profile = getattr(model, "profile", None)
-    except Exception:
+    except Exception as exc:
+        log_event(
+            RUN_LOGGER,
+            "provider.capability_profile_unavailable",
+            level=logging.WARNING,
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
         profile = None
     profile = profile if isinstance(profile, dict) else {}
 

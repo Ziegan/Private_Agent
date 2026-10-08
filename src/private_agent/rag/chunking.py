@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Sequence
+
+from ..run_logging import RUN_LOGGER, log_event
 
 STRATEGIES = (
     "auto",
@@ -290,7 +293,14 @@ def _split_semantic(
     ]
     try:
         vectors = embed(windows)
-    except Exception:
+    except Exception as exc:
+        log_event(
+            RUN_LOGGER,
+            "rag.semantic_chunking_failed",
+            level=logging.WARNING,
+            error_type=type(exc).__name__,
+            fallback="sentence_chunking",
+        )
         return _pack(sentences, settings, " ")
     if len(vectors) != len(sentences):
         return _pack(sentences, settings, " ")

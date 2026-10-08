@@ -3,7 +3,8 @@
 ## Summary
 
 Private Agent is a local-first, privacy-focused command-line AI agent. It runs
-chat models on your own machine through [Ollama](https://ollama.com/), keeps
+chat models through local runners such as [Ollama](https://ollama.com/), LM
+Studio, and other configured OpenAI-compatible runtimes, keeps
 long-term memory and task plans in a local SQLite database, grounds answers in
 your own documents with a local RAG index (ChromaDB + BM25), extends itself
 with Markdown skills, and acts on your workspace through permission-gated
@@ -27,19 +28,27 @@ an online provider or an online research request.
 
 ## Core Functionality and Operational Behaviour
 
-**Session flow.** `private-agent` loads `~/.private_agent.conf`, locks the
-workspace root, asks for a session permission mode, then asks for a provider
-(local Ollama or an OpenAI-compatible online API) and a model. It detects the
-model's capabilities, loads skills, indexes RAG documents, opens the SQLite
-memory, prints a compact status (only non-zero counts) and starts the prompt
-loop. Completed turns are saved as they finish.
+**Session flow.** `private-agent` loads `~/.private_agent.conf`, discovers
+reachable local inference runtimes on supported desktop platforms (Ollama,
+LM Studio, and configured loopback OpenAI-compatible servers such as llama.cpp), locks the
+workspace root, asks for a session permission mode, then asks for an available
+provider and model. If no local runtime is found, online mode is the default.
+When an online API key is configured, startup offers
+"Online — configured in config" as the default provider and a separate manual
+entry option. The selected online configuration is reused for the rest of that
+run, including after `switch`. It detects the model's capabilities, loads
+skills, indexes RAG documents, opens the SQLite memory, prints a compact status
+(only non-zero counts) and starts the prompt loop. Completed turns are saved as
+they finish.
 
-**Agentic loop.** Each request runs a bounded plan → act → verify loop. The
-model may call tools; every call is checked against the permission mode, the
-workspace boundary, output-size limits and iteration/call/time budgets
-(`max_tool_iterations`, `max_tool_calls`, `max_task_seconds`). Failures are fed
-back to the model so it can analyse, fix and retry until done or the budget is
-reached.
+**Agentic loop.** Each request runs a plan → act → verify loop. Every tool call
+is checked against the permission mode, workspace boundary and output-size
+limits. Local models have no configured round-count or tool-call-count cap.
+When an online model is allowed to call tools, the CLI asks whether to apply
+`max_tool_iterations` and `max_tool_calls` for that session; declining (the
+default) leaves those counts uncapped. `max_task_seconds` remains in effect
+for all providers. Failures are fed back to the model so it can analyse, fix
+and retry within the active time budget.
 
 **Permission model (kept separate per role).**
 
@@ -68,13 +77,17 @@ session is summarized and saved with short stage messages
 
 **Failure handling.** Startup errors exit with a non-zero status; model, tool,
 network, database and sandbox errors are caught, reported concisely and the
-session continues where safe.
+session continues where safe. Empty model responses are retried once within
+the current turn's time budget; if the retry also fails or is empty, the agent
+reports that in the current session rather than restarting it.
 
 ## Features Implemented
 
-- **Models and providers**: local Ollama chat models and OpenAI-compatible
-  online endpoints (HTTPS or loopback only; the API key is asked at runtime and
-  never written to disk); automatic capability detection (tools, function
+- **Models and providers**: Ollama and configured local OpenAI-compatible
+  runtimes (including LM Studio and llama.cpp), plus OpenAI-compatible online endpoints (HTTPS
+  or loopback only). Online credentials may be entered for one session or
+  explicitly loaded from the saved configuration; manually entered keys are
+  never written to disk. Automatic capability detection (tools, function
   calls, structured output, thinking, vision, audio); toggleable thinking with
   configurable effort (`/think`, `/think-effort`, `/think-status`); streaming
   output; optional visible reasoning; Ollama hardware-placement report
@@ -103,53 +116,104 @@ session continues where safe.
   changed or removed under the RAG path (checked before each request, at most
   every `rag.auto_refresh_seconds`), size/page/document caps, citations, status, list,
   reindex and reset via `/maintenance`.
-- **Skills**: Markdown skills with relevance matching, a per-skill tool
-  budget, `/skills` listing and explicit selection with auto-completion, and
-  skill creation through a tool.
+- **Skills**: Markdown skills with relevance matching, a per-skill tool-round
+  limit that is enforced only when online tool limits are consented, `/skills`
+  listing and explicit selection with auto-completion, and skill creation
+  through a tool.
 - **MCP**: stdio (sandboxed) and remote HTTP MCP servers configured in the
   config file, with an auto-approve allow-list for trusted tools.
-- **Interactive CLI**: command and `@file` auto-completion, `/help`,
-  `/list_tools`, `/maintenance`, `/plan`, `/tasks`, `/skills`, `switch`,
+- **Interactive CLI**: command and `@file` auto-completion, session-wide prompt
+  history, `/help`, `/status`, `/context`, `/add`, `/list_tools`,
+  `/maintenance`, `/plan`, `/tasks`, `/skills`, `switch`,
   `exit`, compact startup counts for memory and saved plans.
 - **Maintenance and safety**: retention policies, stale-task handling,
   schema-aware writes, debug run logs, and fail-closed sandboxing.
+- **Provider recovery**: an empty streaming response is retried once using
+  non-streaming invocation within the existing task deadline; persistent
+  empty responses or retry failures are reported in the current session.
 
 ## Installation and Standalone Run Steps
 
-Requirements: Python 3.10–3.14 (validated on 3.14), Ollama, and on Linux
-`bubblewrap` (`bwrap`) plus `util-linux` (`prlimit`) for shell, code-task
-tests and stdio MCP (these features are disabled, not unsandboxed, without
-them).
+Requirements: Python 3.10–3.14 (validated on 3.14), at least one supported
+local runtime or an online OpenAI-compatible endpoint. Local runtime discovery
+uses loopback APIs and is available across desktop platforms. On Linux,
+`bubblewrap` (`bwrap`) plus `util-linux` (`prlimit`) are required for shell,
+code-task tests and stdio MCP (these features are disabled, not unsandboxed,
+without them).
 
 ```sh
-# 1. Get the code and install dependencies
+# 1. Get the code
 git clone https://github.com/Ziegan/Private_Agent.git && cd Private_Agent
+# Install the command in an isolated system-wide environment:
+pipx install .
+```
+
+Alternatively, install the command in a virtual environment (activate that
+environment whenever you use it):
+
+```sh
 python -m venv .venv && source .venv/bin/activate
-python -m pip install -r requirements.txt        # or: python -m pip install .
+python -m pip install .
 # Optional: media input (webcam, video, microphone, Whisper)
 python -m pip install ".[media]"
 # Development and tests
 python -m pip install -e ".[dev]" && pytest -q
+```
 
-# 2. Install and start Ollama, then pull a chat model and an embedding model
+```sh
+# 2. Optional local inference: start a supported local runner
+# Ollama example:
 ollama pull qwen3:4b          # any tool-capable chat model you prefer
 ollama pull nomic-embed-text  # needed only for RAG
+# LM Studio and llama.cpp use their configured loopback OpenAI-compatible APIs.
 
-# 3. Run (all three are equivalent)
-python main.py
-python -m private_agent
-private-agent                 # after `pip install .`
+# 3. Run the installed command from the project you want it to work on
+cd /path/to/your/project
+private-agent
+# The source checkout can also be run with `python main.py` or
+# `python -m private_agent`.
 ```
+
+Pass `--verbose-startup` to show configured paths, saved-memory counts, local
+runtime details, detailed hardware diagnostics, and successful MCP/skill
+discovery messages. The concise Ready summary includes OS/architecture and
+whether OS-isolated command execution is available. In normal startup, Ollama
+hardware placement is shown in the Ready summary only when an Ollama model is
+selected; verbose startup can show diagnostics for all discovered Ollama
+servers. `/hardware-status` reports Ollama placement when Ollama is selected,
+and explains when another local runner does not expose a standardized
+hardware-placement API. Destructive
+local data resets are available under
+`/maintenance` → `data reset` and still require typing `RESET`.
+
+When launched from a project directory, `private-agent` automatically uses any
+`workspace`, `rag`, and `skills` directories found directly there, under
+`resources/`, or under `private_agent/resources/`. For each folder name, lookup
+priority is project root, `resources/`, then `private_agent/resources/`;
+symbolic links and paths escaping the project root are ignored. The matching
+local directories override the corresponding configured defaults for that run.
+If no local `workspace` folder is found, the normal configured workspace prompt
+is used; if no local `rag` folder is found, the configured RAG path/prompt is
+used; and if no local `skills` folder is found, the configured skills path is
+used.
 
 The first run creates `~/.private_agent.conf` (JSON) in your home directory;
 legacy flat keys are migrated. Memory is stored in `~/.local_ai_memory.db`.
 Put documents for RAG in `~/.private_agent/rag/` and skills in
 `~/.private_agent/resources/skills/`.
 
-Session commands: `exit`, `switch`, `/help`, `/list_tools`, `/maintenance`,
-`/plan`, `/tasks`, `/skills [key]`, `/think on|off`, `/think-effort
-low|medium|high`, `/think-status`, `/hardware-status`, `/summarize` (summarize and store the session now; `exit` will not re-summarize unless new prompts followed), `/compact` (replace the context window with a short working summary, without storing it), and `@path/to/file`
-to attach a workspace text file as request-only context.
+Session commands: `exit`, `switch`, `/help`, `/status`, `/context`,
+`/context clear`, `/list_tools`, `/maintenance` (`data reset` resets local
+stores after typed confirmation), `/plan`, `/tasks`, `/skills [key]`, `/think on|off`, `/think-effort
+low|medium|high`, `/think-status`, `/hardware-status`, `/summarize` (summarize and store the session now; `exit` will not re-summarize unless new prompts followed), `/compact` (replace the context window with a short working summary, without storing it), `/add path/to/folder` (include supported UTF-8 text files from an in-workspace folder in the next request only), and `@path/to/file`
+to attach a workspace text file as request-only context. Folder and file context
+are limited to the configured `tools.max_read_file_bytes` total; folder context
+also skips hidden paths and is limited to 100 supported text files. Attached
+contents are treated as untrusted data and are not saved in chat history.
+The CLI requires an interactive terminal; non-TTY startup prints a message and
+exits before opening a session. In the interactive prompt, Up/Down navigate
+history and Ctrl-R searches it; prompt history is retained in memory for the
+current application session only.
 
 On exit the agent saves the session summary (timed) and prints a **Session Statistics** table: SQL session ID, session/agent/permission mode, provider, model, thinking, total session time, input/output/total tokens (provider-reported when available, otherwise estimated), tool uses per tool, summary tokens and generation time.
 
@@ -280,12 +344,16 @@ values win on conflict.
   },
   "models": {
     "ollama_base_url": "http://localhost:11434",      // Ollama server URL
+    "local_openai_compatible_endpoints": [            // Loopback local APIs discovered on supported desktop platforms
+      {"name": "LM Studio", "base_url": "http://127.0.0.1:1234/v1"},
+      {"name": "llama.cpp", "base_url": "http://127.0.0.1:8080/v1"}
+    ],
     "hardware_acceleration": "auto",                  // auto | cpu | accelerator (preference only)
     "preferred_model": null,                          // Default local model name
     "online_base_url": "https://api.openai.com/v1",   // OpenAI-compatible endpoint (HTTPS or loopback)
     "online_model": null,                             // Default online model id
     "online_permission_override": false,              // true = online runs get ALL tools (incl. local-only location/media) without the per-session tool prompt; arguments/results go to the provider. Workspace/permission-mode approvals still apply
-    "online_api_key": null,                           // Optional saved API key; when set, online mode offers to use it with online_base_url (else the key is asked in the terminal). Plain text: restrict the file (chmod 600)
+    "online_api_key": null,                           // Optional saved API key; online startup offers saved details or manual URL/key entry. Plain text: restrict the file (chmod 600)
     "temperature": 0.1,                               // Sampling temperature
     "embedding_model": "nomic-embed-text",            // Ollama embedding model for RAG
     "thinking_enabled_by_default": false,             // Start with thinking on
@@ -297,8 +365,8 @@ values win on conflict.
   },
   "agent": {
     "permission_mode": "auto",                        // Default session mode: manual | auto | full
-    "max_tool_iterations": 15,                        // Plan/act/verify steps per request
-    "max_tool_calls": 60,                             // Tool calls per request
+    "max_tool_iterations": 15,                        // Online plan/act rounds, only if consented
+    "max_tool_calls": 60,                             // Online calls per request, only if consented
     "max_task_seconds": 600,                          // Wall-clock budget per request
     "max_tool_output_chars": 12000,                   // Tool output kept in context
     "max_history_messages": 20,                       // Chat messages kept in context
@@ -408,8 +476,8 @@ values win on conflict.
     "failed_test_output_chars": 3000                  // Failing test output kept
   },
   "logging": {
-    "debug_enabled": 0,                               // 1 writes a debug run trace file (~/.private_agent/logs/, mode 0600; nothing extra is printed to the terminal)
-    "level": "INFO"                                   // DEBUG | INFO | WARNING | ERROR | CRITICAL; lines are "timestamp | LEVEL | logger | file.py:line | function | message"
+    "debug_enabled": 0,                               // 1 writes a private JSON Lines run trace (~/.private_agent/logs/, file mode 0600; terminal output is unchanged)
+    "level": "INFO"                                   // DEBUG | INFO | WARNING | ERROR | CRITICAL
   },
   "mcp": {
     "auto_approve_tools": [],                         // MCP tool names that skip confirmation
@@ -417,6 +485,13 @@ values win on conflict.
   }
 }
 ```
+
+Debug logs are one JSON record per line and include UTC time, run ID, source
+location, lifecycle event, and full exception tracebacks. Console prompts,
+responses, and rendered output are not copied into the log; tool and model
+events record operational metadata rather than prompt, result, or argument
+bodies. Captured exception details redact known credential patterns and
+argument values echoed by tools.
 
 ## Source Layout
 

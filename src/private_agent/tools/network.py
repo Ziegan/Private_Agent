@@ -3,17 +3,27 @@
 import asyncio
 import ipaddress
 import json
+import logging
 import os
 import subprocess
 import sys
 import threading
 import time
 import urllib.parse
+from collections.abc import Iterable
 
 import httpcore
 import httpx
 from bs4 import BeautifulSoup
 from rich.console import Console
+
+from httpcore._backends.base import (
+    AsyncNetworkBackend,
+    AsyncNetworkStream,
+    NetworkBackend,
+    NetworkStream,
+    SOCKET_OPTION,
+)
 
 from ..config import (
     MAX_HTTP_REDIRECTS,
@@ -24,6 +34,7 @@ from ..config import (
     MAX_WEBPAGE_BYTES,
     NETWORK_REQUEST_TIMEOUT,
 )
+from ..run_logging import RUN_LOGGER, log_event
 
 console = Console()
 _outbound_http_clients = []
@@ -198,7 +209,7 @@ async def _resolve_validated_peer_async(
     return _validated_peer_addresses(host, records, allow_loopback)
 
 
-class _PublicOnlyNetworkBackend:
+class _PublicOnlyNetworkBackend(AsyncNetworkBackend):
     """Resolve and validate each peer immediately before connecting to its IP."""
 
     def __init__(self, allow_loopback: bool = False):
@@ -209,12 +220,12 @@ class _PublicOnlyNetworkBackend:
 
     async def connect_tcp(
         self,
-        host,
-        port,
-        timeout=None,
-        local_address=None,
-        socket_options=None,
-    ):
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[SOCKET_OPTION] | None = None,
+    ) -> AsyncNetworkStream:
         deadline = _connect_deadline(timeout)
         addresses = await _resolve_validated_peer_async(
             host,
@@ -241,14 +252,19 @@ class _PublicOnlyNetworkBackend:
             raise last_error
         raise OSError("Outbound hostname resolved to no connectable addresses.")
 
-    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+    async def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Iterable[SOCKET_OPTION] | None = None,
+    ) -> AsyncNetworkStream:
         raise OSError("Unix-domain sockets are disabled for outbound web requests.")
 
-    async def sleep(self, seconds):
+    async def sleep(self, seconds: float) -> None:
         await self._backend.sleep(seconds)
 
 
-class _PublicOnlySyncNetworkBackend:
+class _PublicOnlySyncNetworkBackend(NetworkBackend):
     def __init__(self, allow_loopback: bool = False):
         from httpcore._backends.sync import SyncBackend
 
@@ -256,8 +272,13 @@ class _PublicOnlySyncNetworkBackend:
         self._allow_loopback = allow_loopback
 
     def connect_tcp(
-        self, host, port, timeout=None, local_address=None, socket_options=None
-    ):
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Iterable[SOCKET_OPTION] | None = None,
+    ) -> NetworkStream:
         deadline = _connect_deadline(timeout)
         addresses = _resolve_validated_peer(
             host,
@@ -284,10 +305,15 @@ class _PublicOnlySyncNetworkBackend:
             raise last_error
         raise OSError("Outbound hostname resolved to no connectable addresses.")
 
-    def connect_unix_socket(self, path, timeout=None, socket_options=None):
+    def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: Iterable[SOCKET_OPTION] | None = None,
+    ) -> NetworkStream:
         raise OSError("Unix-domain sockets are disabled for outbound requests.")
 
-    def sleep(self, seconds):
+    def sleep(self, seconds: float) -> None:
         return self._backend.sleep(seconds)
 
 
@@ -410,6 +436,13 @@ async def close_outbound_http_clients():
             else:
                 await asyncio.to_thread(client.close)
         except Exception as exc:
+            log_event(
+                RUN_LOGGER,
+                "network.client_close_failed",
+                level=logging.WARNING,
+                client_type=type(client).__name__,
+                error_type=type(exc).__name__,
+            )
             console.print(
                 f"[yellow][Shutdown warning] Could not close an outbound "
                 f"HTTP client: {type(exc).__name__}[/yellow]"
@@ -438,9 +471,12 @@ def validate_outbound_url(url: str) -> str:
     try:
         normalized_url = _normalize_outbound_url(url)
         parsed = urllib.parse.urlsplit(normalized_url)
+        hostname = parsed.hostname
+        if hostname is None:
+            raise ValueError("Only HTTP(S) URLs with a host are allowed.")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         _resolve_validated_peer(
-            parsed.hostname,
+            hostname,
             port,
             allow_loopback=False,
         )
@@ -472,9 +508,12 @@ async def _validate_outbound_url_async(url: str) -> str:
     try:
         normalized_url = _normalize_outbound_url(url)
         parsed = urllib.parse.urlsplit(normalized_url)
+        hostname = parsed.hostname
+        if hostname is None:
+            raise ValueError("Only HTTP(S) URLs with a host are allowed.")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         await _resolve_validated_peer_async(
-            parsed.hostname,
+            hostname,
             port,
             allow_loopback=False,
             timeout=NETWORK_REQUEST_TIMEOUT,

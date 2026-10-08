@@ -35,6 +35,16 @@ DEFAULT_CONFIG = {
     },
     "models": {
         "ollama_base_url": "http://localhost:11434",
+        "local_openai_compatible_endpoints": [
+            {
+                "name": "LM Studio",
+                "base_url": "http://127.0.0.1:1234/v1",
+            },
+            {
+                "name": "llama.cpp",
+                "base_url": "http://127.0.0.1:8080/v1",
+            },
+        ],
         "hardware_acceleration": "auto",
         "preferred_model": None,
         "online_base_url": "https://api.openai.com/v1",
@@ -184,6 +194,7 @@ _LEGACY_CONFIG_KEYS = {
     "preferred_model": ("models", "preferred_model"),
     "online_base_url": ("models", "online_base_url"),
     "online_model": ("models", "online_model"),
+    "online_api_key": ("models", "online_api_key"),
     "default_model_temperature": ("models", "temperature"),
     "embedding_model": ("models", "embedding_model"),
     "thinking_toggle_default": ("models", "thinking_enabled_by_default"),
@@ -371,11 +382,9 @@ def load_or_create_config() -> dict:
         return _merge_config(DEFAULT_CONFIG)
 
 def sys_modules_safe() -> bool:
-    try:
-        import sys
-        return "pytest" in sys.modules
-    except Exception:
-        return False
+    import sys
+
+    return "pytest" in sys.modules
 
 def load_config() -> dict:
     """Alias for load_or_create_config for compatibility with tool/agent modules."""
