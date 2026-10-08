@@ -311,6 +311,7 @@ def test_task_validation_columns_migrate_existing_database(tmp_path):
         for row in memory.conn.execute("PRAGMA table_info(agent_tasks)").fetchall()
     }
     assert {"validation_revision", "validation_evidence"} <= columns
+    assert memory.conn.execute("PRAGMA user_version").fetchone()[0] == 1
     memory.close()
 
 
@@ -427,9 +428,11 @@ def test_failed_schema_migration_preserves_existing_database(tmp_path, monkeypat
         item[1]
         for item in connection.execute("PRAGMA table_info(chat_history)")
     }
+    schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
     connection.close()
     assert row == ("legacy-session", "human", "keep this source row")
     assert "is_skill_file" not in columns
+    assert schema_version == 0
 
 
 def test_legacy_summary_only_row_survives_schema_migration(tmp_path):
@@ -456,7 +459,30 @@ def test_legacy_summary_only_row_survives_schema_migration(tmp_path):
     assert episode["description"] is None
     assert episode["task_summary"] is None
     assert episode["plan"] is None
+    assert memory.conn.execute("PRAGMA user_version").fetchone()[0] == 1
     memory.close()
+
+
+def test_future_schema_version_is_rejected_without_modifying_existing_data(tmp_path):
+    db_path = str(tmp_path / "future-schema.sqlite")
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE preserved (value TEXT NOT NULL)")
+    connection.execute("INSERT INTO preserved (value) VALUES ('keep')")
+    connection.execute("PRAGMA user_version = 2")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(sqlite3.DatabaseError, match="newer than the supported"):
+        PersistentMemory(db_path)
+
+    connection = sqlite3.connect(db_path)
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert connection.execute("SELECT value FROM preserved").fetchone() == ("keep",)
+    assert connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name = 'chat_history'"
+    ).fetchone() is None
+    connection.close()
 
 
 def test_task_resume_capsule_enforces_configured_size_limit(tmp_path, monkeypatch):

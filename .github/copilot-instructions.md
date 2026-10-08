@@ -55,6 +55,40 @@ measurements to establish a baseline and verify the effect; avoid claiming
 improvements without evidence. Preserve permission boundaries, failure
 visibility, and regression coverage while optimizing.
 
+## Performance coding practices
+
+Treat `optimization_guide.md` as a source of hypotheses, not as measured
+results for this application. Its sample timings and blanket recommendations
+do not establish which change is faster or safe for this codebase.
+
+- Find the measured bottleneck and record a repeatable baseline with
+  representative input sizes. Compare the same workload before and after;
+  include latency and peak-memory evidence where relevant, and verify output
+  quality as well as speed. For retrieval changes, use the RAG benchmark
+  documented in the README: it measures index-build time, query latency,
+  recall@k, and mean reciprocal rank against labeled queries.
+- Prefer algorithmic improvements when the access pattern supports them. For
+  example, a set can improve repeated membership checks, but account for its
+  construction and memory cost and preserve ordering or duplicate semantics
+  where callers rely on them.
+- Remove copies or materialization only when object ownership and lifetime are
+  clear. Do not mutate caller-owned or shared state merely to save an
+  allocation. Use lazy/bounded iteration only when the consumer does not need
+  the complete result.
+- Add caches only with an explicit bound, lifetime, and invalidation strategy.
+  Keep context, task, request, and concurrency limits intact; avoid trading
+  predictable resource use for unbounded retained memory.
+- Apply `__slots__`, preallocation, local-function rewrites, `bisect`, or
+  operator substitutions only when profiling the actual workload demonstrates
+  a benefit and compatibility/semantic constraints are covered by tests.
+  Consider the full algorithmic cost (for example, insertion into a Python
+  list remains linear even when locating an insertion point is logarithmic).
+- Review `ruff check src tests --select PERF` findings individually. A
+  `try`/`except` or snapshot copy inside a loop may be intentional for
+  per-item error isolation or safe mutation during iteration; do not remove
+  those guarantees to silence a lint finding. Keep expected failures
+  observable through the existing logging and user-facing error paths.
+
 ## Build, test, and lint
 
 Install the package and development tools with:

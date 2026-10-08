@@ -141,15 +141,19 @@ async def test_mcp_tool_errors_redact_sensitive_arguments_from_output_and_logs(
         permission_mode="full",
     )
 
-    logged_results = " ".join(str(call) for call in logger.info.call_args_list)
+    logged_events = [
+        call.kwargs["extra"]["event"]
+        for call in logger.log.call_args_list
+    ]
     assert "[REDACTED]" in result.content
     assert secret not in result.content
-    assert secret not in logged_results
+    assert "tool.execution_failed" in logged_events
+    assert "tool.failed" in logged_events
     assert secret not in "\n".join(output)
 
 
 @pytest.mark.asyncio
-async def test_mcp_tool_output_is_bounded_before_logging_and_provider_return(
+async def test_mcp_tool_output_is_bounded_and_logs_only_output_metadata(
     monkeypatch,
 ):
     import private_agent.agent.runtime as agent
@@ -174,8 +178,17 @@ async def test_mcp_tool_output_is_bounded_before_logging_and_provider_return(
 
     expected = "x" * 12 + "\n[Tool output truncated by configured limit.]"
     assert result.content == expected
-    assert logger.info.call_args.args[-1] == expected
-    assert len(logger.info.call_args.args[-1].split("\n", 1)[0]) == 12
+    completion_call = next(
+        call
+        for call in logger.log.call_args_list
+        if call.kwargs["extra"]["event"] == "tool.completed"
+    )
+    event_fields = completion_call.kwargs["extra"]["event_fields"]
+    assert event_fields["tool"] == tool.name
+    assert event_fields["outcome"] == "success"
+    assert isinstance(event_fields["elapsed_seconds"], float)
+    assert event_fields["output_character_count"] == len(expected)
+    assert "x" * 12 not in str(event_fields)
 
 
 @pytest.mark.asyncio

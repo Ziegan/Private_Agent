@@ -1,4 +1,4 @@
-# Structured Implementation Plan
+l# Structured Implementation Plan
 
 ## Purpose and relationship to the roadmap
 
@@ -96,28 +96,152 @@ the capabilities required by each workflow.
 **Objective:** Record what exists today and make current behavior measurable
 before structural changes begin.
 
-**Work sequence:**
+**Phase status: IN PROGRESS.** Architecture, roadmap, compatibility, and
+initial validation inventories are recorded below. Benchmark coverage is
+incomplete, and reproducibility/failure follow-up remains open.
 
-1. Map current entry points, runtime ownership, configuration loading,
-   provider selection, tool registration/authorization, memory schemas, RAG
-   lifecycle, coding-task isolation, and shutdown cleanup.
-2. Classify roadmap capabilities as implemented, partial, or planned, linking
-   each classification to current code or tests rather than inferring it from
-   the roadmap.
-3. Identify public and operational compatibility surfaces: CLI commands,
-   config keys and migration behavior, SQLite tables, skill formats, RAG
-   metadata, tool names/schemas, environment expectations, and package entry
-   points.
-4. Run the existing unit and integration suites and documented lint and
-   requirements-sync checks. Record platform prerequisites and any existing
-   failures without hiding them as regressions from later work.
-5. Establish repeatable benchmark inputs and baseline resource measurements
-   for relevant workloads. Keep benchmark data local when it contains private
-   source material.
+### Task status
 
-**Exit gate:** The baseline is reproducible, compatibility surfaces are
-identified, known failures are distinguished from new regressions, and each
-planned structural extraction has an owner and a verification path.
+- [x] **1. Map current architecture and resource ownership.** Completed;
+  evidence is in the architecture map below.
+- [x] **2. Classify roadmap capabilities against current code and tests.**
+  Completed; evidence is in the capability inventory below.
+- [x] **3. Identify compatibility and migration surfaces.** Completed;
+  evidence is in the compatibility inventory below.
+- [x] **4. Run documented baseline checks and record environment-specific
+  failures.** Completed for this snapshot; results and caveats are recorded
+  below. Completion means the checks were run and results classified, not
+  that every existing check passes.
+- [~] **5. Establish repeatable performance benchmark inputs and resource
+  measurements.** Partially complete: one CLI bootstrap measurement was
+  captured, but no labeled RAG corpus/query fixture or live Ollama embedding
+  service was available for the documented retrieval benchmark.
+- [ ] **6. Triage baseline test/lint failures and make test configuration
+  isolation reproducible.** Added after observing different results between
+  the user's home and an isolated home. Keep this distinct from feature work;
+  do not silently fix production behavior as part of the inventory.
+
+### Baseline snapshot
+
+Captured 2026-10-08 in the repository at commit `ca2dd37`, branch `Phase_0`.
+The working tree already contained untracked `.github/` and
+`structured implementation.md` deliverables; they are not source behavior
+included in the baseline. The package contains 45 Python source files and the
+test suite contains 17 `test_*.py` files. The runtime used for the checks
+reported Python 3.14.8, pytest 9.1.1, and Ruff 0.16.10. README documents Python
+3.10–3.14 support (3.14 validated).
+
+### Current architecture map
+
+| Boundary | Current implementation and responsibility |
+| --- | --- |
+| Entrypoints | `main.py`, `src/private_agent/__main__.py`, and the `private-agent` script in `pyproject.toml` delegate to `private_agent.cli:main` in `src/private_agent/cli.py`. |
+| Session orchestration | `src/private_agent/agent/runtime.py` owns interactive startup, provider/model choice, context assembly, turns, tool execution, task flows, and shutdown. `agent/__init__.py` is a compatibility facade. |
+| Configuration | `src/private_agent/config.py` owns defaults, JSON load/create/migration, runtime aliases, and packaged prompt loading; configuration is currently centralized rather than split into the future roadmap's separate files. |
+| Providers | `src/private_agent/agent/providers.py` holds provider-independent validation and Ollama model construction helpers; provider selection and capability orchestration also live in `agent/runtime.py`. Current choices are Ollama and OpenAI-compatible online endpoints. |
+| Tools and policy | `src/private_agent/tools/` contains domain tools and the mutable `AVAILABLE_TOOLS` registry in `tools/__init__.py`. `agent/permissions.py` and runtime dispatch enforce session, network, coding, and device boundaries; MCP tools are loaded into the registry at runtime. |
+| Persistent memory and plans | `src/private_agent/database/memory.py` owns SQLite schema/migrations, conversation history, episodic and learned memory, task plans, revisions, leases, and task events/actions. |
+| Document retrieval | `src/private_agent/rag/` owns text chunking, Chroma indexing/state, BM25/vector retrieval, and citations. `agent/runtime.py` retrieves context and injects it into requests. |
+| Skills | `src/private_agent/skills/` loads and manages Markdown skill profiles; current content format and registry are file-based. |
+| Workspace and code tasks | `src/private_agent/sandbox/linux.py` validates workspace paths and shell risk; `src/private_agent/code_tasks/` creates isolated workspaces, checkpoints, and bounded test runs. Linux sandbox features require `bwrap` and `prlimit`, both present during this baseline. |
+| Tests | `tests/unit/` and `tests/integration/` exercise modules and the assembled runtime. `tests/conftest.py` supplies temporary SQLite/workspace fixtures; tests mock model/service behavior. |
+
+This map describes current ownership, not a recommendation to preserve every
+current coupling. The large runtime and dynamic global tool registry are
+notable Phase 1 extraction seams.
+
+### Roadmap capability inventory
+
+Status describes the current implementation relative to each roadmap target:
+**partial** means related capability exists but the target scope is not met;
+**planned** means no corresponding end-to-end capability was identified.
+
+| Roadmap phase | Status | Current evidence and remaining target gap |
+| --- | --- | --- |
+| 0 — Foundation stabilization | Partial | Categorized JSON configuration, provider helpers, and separated domain packages exist. Configuration remains centralized, runtime orchestration is heavily coupled, and there is no general dependency-injection/plugin contract. See `config.py`, `agent/runtime.py`, `agent/providers.py`, and `tools/__init__.py`. |
+| 1 — Universal provider layer | Partial | Ollama and OpenAI-compatible endpoints, capability handling, and provider tests exist. LM Studio, Anthropic, Gemini, Azure, OpenRouter, and a provider-neutral embeddings/models interface are not implemented as interchangeable adapters. See `agent/providers.py`, `agent/runtime.py`, and `tests/unit/test_providers.py`. |
+| 2 — Repository intelligence | Partial | Workspace file/text/symbol search and Git inspection support coding tasks. Persistent AST, symbol, dependency/call graph indexing, and architecture discovery are not present. See `tools/filesystem.py` and `tests/unit/test_tools.py`. |
+| 3 — Advanced context engine | Partial | Token accounting, context limits, history compaction, and bounded memory/RAG context exist. Repository-aware ranking across dependencies/tests and layered provenance-preserving context are not a complete shared engine. See `agent/compaction.py`, `agent/prompts.py`, and `tests/unit/test_compaction.py`. |
+| 4 — Advanced memory | Partial | SQLite history, episodic summaries, user-confirmed learned items, skills, and task state exist. Explicit episodic/semantic/procedural/repository memory contracts with unified provenance and retrieval are not complete. See `database/memory.py` and `tests/unit/test_database.py`. |
+| 5 — Deep research | Partial | Consent-gated web search/fetch and research citations in planning exist. Multi-source claim evidence, confidence/verification state, contradiction handling, and structured research reports are not complete. See `tools/web.py`, `agent/permissions.py`, and `tests/integration/test_agent_runtime.py`. |
+| 6 — Multi-agent architecture | Planned | Planner and coding task modes exist, but the specialized planner/explorer/researcher/developer/reviewer/tester/architect workflow with delegated budgets and handoffs was not identified. See `agent/runtime.py` and runtime integration tests. |
+| 7 — Autonomous coding workflows | Partial | Approved plans, isolated workspaces, checkpoints, and bounded project tests exist. Repository-intelligence-driven impact analysis, advisory refactoring analysis, and a complete review/test agent workflow are absent. See `code_tasks/`, `agent/permissions.py`, and `tests/unit/test_code_tasks.py`. |
+| 8 — Enterprise security | Partial | Workspace boundaries, tool approval, network validation/consent, and Linux sandboxing exist. The roadmap's secret scanning, security scan integration, general policy engine, and configurable audit coverage are not complete. See `sandbox/linux.py`, `agent/permissions.py`, `tools/network.py`, and `tests/unit/test_network.py`. |
+| 9 — Enterprise observability | Partial | Debug run logs and session/token/tool statistics exist. OpenTelemetry-compatible traces/metrics and operational export/monitoring are not implemented as a complete observability layer. See `run_logging.py`, `agent/session_stats.py`, and `tests/unit/test_session_stats.py`. |
+| 10 — MCP ecosystem | Partial | Configured stdio and remote HTTP MCP tools and a trusted-tool auto-approve list exist. A managed marketplace/distribution lifecycle and complete per-tool Allow/Deny/Prompt administration are not present. See `tools/mcp.py`, `tools/__init__.py`, and `tests/unit/test_tools.py`. |
+| 11 — Advanced RAG | Partial | Local document indexing, configurable chunking, Chroma plus BM25 retrieval, citations, and refresh exist. Repository symbols and external knowledge sources are not unified in the RAG pipeline. See `rag/` and `tests/unit/test_rag.py`. |
+| 12 — Knowledge graph | Planned | No typed graph index or graph-query service for files, symbols, services, tables, or APIs was identified. |
+| 13 — Computer use | Partial | Local image/video, webcam, microphone, and transcription tools exist with approval/capability checks. Browser automation and general desktop control are not implemented. See `tools/media.py` and `tests/unit/test_media.py`. |
+| 14 — Agent operating system | Planned | The current application is a CLI assistant with agent, memory, RAG, tools, and coding-task features; the unified workflow platform and enterprise operations surface are not implemented. |
+
+These classifications are an initial inventory, not feature certification;
+revisit them as the relevant code and tests evolve.
+
+### Compatibility and migration inventory
+
+- **Invocation/package:** Preserve `python main.py`, `python -m
+  private_agent`, the `private-agent` console script, and package discovery
+  under `src/`; changing these affects installation and automation.
+- **Configuration:** Preserve `~/.private_agent.conf`, categorized settings,
+  accepted legacy flat keys, default merging, secure file permissions, and
+  the packaged default system prompt. Tests: `tests/unit/test_config.py`.
+- **SQLite:** Preserve existing database files, tables, migration behavior,
+  transactions, task recovery data, and backup/restore expectations. Do not
+  replace or destructively migrate the user's memory store. Tests:
+  `tests/unit/test_database.py`.
+- **CLI/session:** Preserve slash/session commands, permission prompts,
+  provider selection, summary and task workflows, and observable failure
+  behavior. Tests: `tests/unit/test_interactive.py` and
+  `tests/integration/test_agent_runtime.py`.
+- **Tools/policies:** Treat tool names, Pydantic schemas, outputs, permission
+  modes, network-consent prompts, local-only device behavior, and MCP
+  configuration as compatibility surfaces. Tests:
+  `tests/unit/test_tools.py`, `tests/unit/test_network.py`,
+  `tests/unit/test_location.py`, and runtime integration tests.
+- **Skills:** Preserve Markdown skill files, identifiers, registration, and
+  retention semantics. Tests: `tests/unit/test_skills.py`.
+- **RAG:** Preserve configured document/index paths, supported source types,
+  Chroma state, chunk metadata/citations, maintenance behavior, and refresh
+  semantics. Tests: `tests/unit/test_rag.py` and
+  `tests/unit/test_chunking.py`.
+- **Coding workspace:** Preserve isolated-copy defaults, direct-workspace
+  approvals, checkpoint behavior, command/test budgets, and Linux's
+  fail-closed `bwrap`/`prlimit` prerequisites. Tests:
+  `tests/unit/test_code_tasks.py` and runtime integration tests.
+- **Dependencies/platform:** `pyproject.toml` is the runtime dependency source
+  of truth; `requirements.txt` is generated by `scripts/sync_requirements.py`.
+  Preserve Python 3.10+ metadata and the README's supported 3.10–3.14 range.
+
+### Validation and performance baseline
+
+Checks were run with the project virtual environment and an isolated writable
+home where noted:
+
+| Check | Result |
+| --- | --- |
+| `pytest -q` with the existing home | 451 passed, 5 failed, 1 warning, 32.18 s. Three failures concern online location/microphone availability and disappear with isolated home configuration. |
+| `HOME=/tmp/private-agent-phase0-cleanhome ./.venv/bin/python -m pytest -q` | 454 passed, 2 failed, 1 warning, 21.67 s with a writable isolated default config. Reproducible failures: `test_sync_connect_backend_falls_back_to_second_validated_address` and `test_runtime_bounds_assembled_long_session_to_model_context`. The two tests were rerun together under isolated home and both failed again. |
+| `ruff check src tests --select F` | Fails on one F401 unused import at `tests/unit/test_network.py:903`. |
+| `python scripts/sync_requirements.py --check` | Pass. |
+| `python -m private_agent --help` | Pass. One process-level sample: 0.09 s elapsed, 18,904 KB maximum RSS. This measures CLI help/bootstrap only, not an agent session. |
+| `python scripts/benchmark_rag.py --help` | Pass. The actual benchmark did not run: no labeled benchmark corpus/query fixture was identified and the local Ollama endpoint at `127.0.0.1:11434` was unavailable. |
+
+The home-dependent results mean tests are not yet hermetic with respect to
+per-user configuration: three failures occurred only with the existing home
+configuration, while two persisted with a clean default config. The two
+isolated-home failures and the Ruff finding are recorded baseline issues; they
+have not been changed or attributed to future implementation work. The CLI
+measurement is a single sample and is not a performance target. No meaningful
+RAG, repository-indexing, model/tool, or memory-throughput benchmark has been
+established yet.
+
+### Exit gate
+
+Close Phase 0 only after task 5 has repeatable inputs and measurements for
+available representative paths, task 6 has a documented triage/isolation
+outcome, and the baseline can be rerun consistently. Existing failures need
+an explicit classification and regression reference; they need not be
+silently rewritten as passing.
 
 ## Phase 1 — Restructure around explicit architectural boundaries
 
@@ -126,23 +250,67 @@ planned structural extraction has an owner and a verification path.
 **Objective:** Reduce runtime coupling while preserving existing user-facing
 behavior and avoiding a disruptive rewrite.
 
-**Work sequence:**
+**Phase status: IN PROGRESS.** The current boundaries are documented and the
+first provider-construction slice has been extracted. Broader orchestration,
+contract, and lifecycle work remains.
 
-1. Define ownership boundaries for the CLI/session shell, agent orchestration,
-   provider/model access, policy decisions, tool execution, memory, retrieval,
-   configuration, and observability.
-2. Extract behavior from the large runtime into cohesive modules only where
-   tests can protect the before/after behavior. Keep the runtime as an
-   orchestration layer rather than moving all logic into a new monolith.
-3. Introduce typed request/result and error contracts at subsystem boundaries.
-   Preserve provider-specific details behind adapters; do not leak SDK
-   objects into unrelated subsystems.
-4. Give resource creation and cleanup explicit owners. Define startup,
-   per-session, per-task, and per-request lifetimes, including cancellation
-   and partial-startup cleanup.
-5. Keep existing import paths and entry points working through narrow
-   compatibility facades during migration. Remove facades only after callers
-   and downstream use are verified.
+### Task status
+
+- [x] **1. Define current subsystem ownership boundaries.** Completed as an
+  initial map in Phase 0. The map highlights `agent/runtime.py` and the
+  mutable tool registry as coupling seams; ownership still needs refinement
+  as extractions proceed.
+- [~] **2. Extract cohesive behavior from the runtime.** In progress. Local
+  model construction was already delegated through `agent/providers.py`;
+  this change also moved OpenAI-compatible chat-model construction there.
+  Runtime retains `_make_online_chat_model` as a compatibility/configuration
+  facade. Runtime still owns provider selection, capability policy and most
+  session orchestration.
+- [~] **3. Add typed subsystem contracts.** Partially complete. Provider
+  construction now takes explicit typed factory/configuration parameters
+  rather than constructing policy clients inline in the session runtime.
+  Shared typed request/result/capability/error contracts have not yet been
+  established; model objects still use backend SDK types.
+- [~] **4. Clarify resource ownership and cleanup.** Partially complete.
+  The extracted builder receives client factories explicitly; HTTP clients
+  are registered with the network subsystem and closed by runtime session
+  shutdown. A unified lifecycle owner and complete startup/cancellation/
+  partial-initialization guarantees across all subsystems remain future work.
+- [~] **5. Preserve public imports and entry points during migration.**
+  Partially complete. The existing runtime helper remains callable and
+  delegates to the provider boundary; targeted online-session tests and
+  `python -m private_agent --help` pass. The full compatibility surface still
+  needs systematic coverage as more modules are extracted.
+
+### Implemented slice: OpenAI-compatible model construction
+
+`agent/providers.py` now owns construction of OpenAI-compatible chat models
+through `create_openai_compatible_chat_model`. The runtime supplies the model
+factory, secure synchronous/asynchronous HTTP client factories, and normalized
+configuration. This keeps provider-specific model construction together with
+local provider helpers, makes its collaborators test-injectable, and leaves
+runtime as the existing call facade. The change preserves model name,
+endpoint, session key, sampling settings, request/retry/token limits, and
+loopback-aware policy transports. The existing network subsystem remains
+responsible for tracking and closing outbound clients.
+
+This is one bounded extraction, not a claim that the entire runtime has become
+provider-agnostic or that provider/session resource lifecycle is complete.
+
+### Validation record — 2026-10-08
+
+- Focused provider and online-session validation: **6 passed** across
+  `tests/unit/test_providers.py`, online model construction/model listing, and
+  online microphone-tool gating.
+- Full suite with a clean isolated home: **455 passed, 2 failed, 1 warning**
+  in 21.62 seconds. The same two failures were present in the Phase 0 baseline:
+  `test_sync_connect_backend_falls_back_to_second_validated_address` and
+  `test_runtime_bounds_assembled_long_session_to_model_context`.
+- Ruff `--select F` on the changed Python files: passed.
+- `python -m private_agent --help`: passed, preserving the module entry point.
+- `python scripts/sync_requirements.py --check`: passed; no dependencies
+  changed.
+- Generated provider-builder syntax check for Python 3.10: passed.
 
 **Exit gate:** Existing CLI flows and supported imports continue to work;
 responsibilities are documented at module boundaries; tests cover the
@@ -156,32 +324,83 @@ interrupt, and cancellation.
 **Objective:** Make implementations replaceable without scattering provider,
 storage, or policy conditionals through the runtime.
 
-**Work sequence:**
+**Phase status: IN PROGRESS — NOT COMPLETE.** SQLite version tracking and
+provider-neutral/plugin contracts are implemented and tested. Validated
+configuration, configuration schema migration, application-level dependency
+construction, and adoption of shared contracts across existing subsystems
+remain unfinished.
 
-1. Define validated configuration models and a single normalized runtime
-   configuration interface. Preserve `~/.private_agent.conf`, categorized
-   settings, legacy flat-key migration, secure file permissions, and unknown
-   extension settings where supported.
-2. Establish schema versioning and migration/recovery rules for persisted
-   configuration and SQLite state. Migrations must be restart-safe and must
-   not silently discard user data.
-3. Introduce dependency construction at the application/session boundary for
-   providers, memory, retrieval, tool registries, policies, clocks, and
-   telemetry. Use fakes in tests; avoid global mutable state as the extension
-   mechanism.
-4. Specify plugin contracts: identity/version, configuration validation,
-   capability declaration, initialization/shutdown, resource budgets,
-   permission requirements, and failure isolation. Do not enable arbitrary
-   plugin code or implicit network access.
-5. Define stable shared types for model requests/responses, capabilities,
-   evidence/citations, memory records, tool calls/results, and structured
-   execution errors.
+### Task status
 
-**Exit gate:** The existing application can be constructed through the new
-interfaces; configuration and database migration tests prove backward
-compatibility; test doubles can be injected without patching internal globals;
-an invalid or unavailable extension fails explicitly and does not prevent
-unrelated built-in capabilities from operating.
+- [ ] **1. Define validated configuration models and a normalized runtime
+  configuration interface.** Not started. Current `config.py` keeps
+  categorized JSON defaults and legacy-key migration, but runtime still
+  consumes module-level aliases and permissively falls back for invalid
+  values. Keep current file format and mode bits as compatibility requirements
+  for this work.
+- [~] **2. Establish versioned, recoverable configuration and SQLite
+  migrations.** Partially complete. `PersistentMemory` now records SQLite
+  schema version 1 in `PRAGMA user_version`, applies the existing
+  introspective/idempotent schema migration before setting the version, and
+  refuses to open a database with a newer version. Tests cover legacy upgrade,
+  future-version refusal without mutation, and failed migration rollback.
+  Configuration has no explicit schema version yet, and SQLite migrations
+  have not been refactored into individually named version-to-version steps.
+- [~] **3. Introduce application/session dependency construction.**
+  Partially complete. Phase 1's provider builders accept explicit model and
+  policy-client factories; `PluginContext` defines explicit config/services/
+  logger injection for future extensions. The application does not yet
+  compose and inject provider, memory, retrieval, tool-registry, policy,
+  clock, and telemetry dependencies, and mutable module globals remain.
+- [x] **4. Specify plugin contracts.** Contract definitions are in
+  `src/private_agent/plugins.py`: validated name/version/kind, declared
+  capabilities and permissions, resource-budget fields, config validation,
+  and async initialization/shutdown hooks. Discovery/loading is deliberately
+  not added; the contract states that hosts must enforce budgets/permissions
+  and isolate a failed plugin rather than enabling arbitrary code by default.
+- [x] **5. Define stable shared boundary types.** Provider-neutral types are
+  in `src/private_agent/contracts.py` for model messages/requests/responses,
+  capability discovery, token usage, tool calls/results, evidence, memory
+  records, and structured execution errors. Current provider/runtime/storage
+  paths have not yet migrated to consume these types.
+
+### Implemented slices
+
+- **SQLite schema version guard:** `database/memory.py` accepts legacy
+  version-0 databases, performs the existing transactional schema
+  reconciliation, and sets version 1 only after successful initialization.
+  Newer versions fail explicitly before application tables are changed.
+- **Contract foundation:** Added typed immutable shared value objects and
+  declarative plugin manifest/context/protocol types. The plugin module
+  intentionally provides no discovery, import, or execution mechanism.
+
+### Validation record — 2026-10-08
+
+- Focused contract and database tests: **61 passed, 1 dependency deprecation
+  warning**.
+- Full suite under a clean isolated home: **460 passed, 2 failed, 1 warning**
+  in 21.56 seconds. Both failures match the Phase 0 baseline:
+  `test_sync_connect_backend_falls_back_to_second_validated_address` and
+  `test_runtime_bounds_assembled_long_session_to_model_context`.
+- Ruff `--select F` on the changed implementation and test files: passed.
+- Repository-wide Ruff check still reports the pre-existing F401 at
+  `tests/unit/test_network.py:903`; it is outside this phase's changes.
+- Python syntax checks passed for the new contract/plugin modules, database
+  code, and associated tests. Pylance diagnostics for `contracts.py` and
+  `plugins.py` are clear; its reported optional-usage issue in the new test
+  was corrected with an explicit non-None assertion.
+- Requirements synchronization and CLI entry-point checks passed in Phase 1;
+  Phase 2 changes add no dependencies or entry-point changes.
+
+**Completion gate:** Do not mark Phase 2 complete until task 1 has a validated
+configuration model used through a normalized interface; task 2 versions
+configuration and provides explicit, restart-safe database migration steps;
+task 3 injects the required services at the application/session boundary and
+tests with fakes without patching internal globals; and plugin
+failure/budget/permission behavior is enforced by a host. Shared contracts
+must have a migration path into the implementations that consume them. The
+application must remain runnable, preserve legacy config/database behavior,
+and isolate extension failures without disabling unrelated built-ins.
 
 ## Phase 3 — Shared security, policy, and observability foundations
 
@@ -210,6 +429,19 @@ adding more providers, plugins, agents, or external integrations.
 5. Add common timeout, cancellation, retry, concurrency, and output-size
    policy primitives. Retries must be bounded and restricted to operations
    whose repetition is safe.
+
+### Implemented observability and recovery slice
+
+- The private run log now records structured JSONL events with timestamps,
+  run identifiers, source context, and traceback details while avoiding raw
+  prompts, credentials, and tool content.
+- Provider discovery, model initialization, turn failures, tool outcomes,
+  task leases, and shutdown failures emit traceable events.
+- Empty streaming or non-streaming model responses receive one bounded retry
+  within the existing turn deadline; persistent failure is reported in-session.
+
+Phase 3 remains **in progress**: central policy decisions, common enforcement
+points, and consistent resource/metrics contracts remain part of the exit gate.
 
 **Exit gate:** Existing permission behavior has regression coverage; every
 side-effecting capability reaches a policy decision; events can trace a task
@@ -244,6 +476,20 @@ branches in orchestration.
    privacy/data-flow behavior.
 6. Add conformance tests so provider switching does not require changes to
    agent orchestration.
+
+### Implemented local discovery slice
+
+- Linux/macOS startup probes configured loopback Ollama and OpenAI-compatible
+  endpoints with bounded concurrency and per-endpoint timeouts. It reports
+  only reachable runtimes and their advertised chat models.
+- Windows skips local discovery and defaults to online mode. When no local
+  runtime is found elsewhere, online mode remains available by default.
+- Online startup explicitly offers saved configuration or manual URL/key entry;
+  local-compatible runtimes use the existing policy-controlled client factory.
+
+This is a partial provider-platform slice, not adapter conformance: provider
+contracts, normalized adapter lifecycle, and hosted-provider integrations
+remain open.
 
 **Exit gate:** Existing Ollama and OpenAI-compatible sessions retain supported
 behavior; adapter conformance tests pass; unsupported provider capabilities

@@ -69,8 +69,16 @@ def test_min_chunk_chars_merges_small_pieces():
     assert all(len(c) >= 5 for c in chunks)
 
 
-def test_semantic_splits_at_topic_shift_and_falls_back():
+def test_semantic_splits_at_topic_shift_and_traces_fallback(monkeypatch):
+    import private_agent.rag.chunking as chunking
+
     text = " ".join(["Cats purr softly."] * 4 + ["Stocks fell sharply."] * 4)
+    events = []
+    monkeypatch.setattr(
+        chunking,
+        "log_event",
+        lambda _logger, event, **fields: events.append((event, fields)),
+    )
 
     def embed(texts):
         return [[1.0, 0.0] if i < 4 else [0.0, 1.0] for i in range(len(texts))]
@@ -83,6 +91,16 @@ def test_semantic_splits_at_topic_shift_and_falls_back():
         raise RuntimeError("down")
 
     assert split_text(text, s, embed=broken) == split_text(text, s, embed=None)
+    assert events == [
+        (
+            "rag.semantic_chunking_failed",
+            {
+                "level": chunking.logging.WARNING,
+                "error_type": "RuntimeError",
+                "fallback": "sentence_chunking",
+            },
+        )
+    ]
 
 
 def test_invalid_settings_rejected():
