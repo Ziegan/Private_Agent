@@ -20,7 +20,8 @@ def test_tools_are_registered_as_network_tools():
     assert LOCAL_ONLY_NETWORK_TOOL_NAMES == {"fetch_current_location"}
 
 
-def test_location_tool_hidden_from_online_sessions():
+def test_location_tool_hidden_from_online_sessions(monkeypatch):
+    monkeypatch.setattr(runtime, "ONLINE_PERMISSION_OVERRIDE", False)
     kwargs = {"capabilities": {}, "isolation_warning": None}
     assert runtime._tool_unavailable_reason(
         "fetch_current_location", provider_type="online", **kwargs
@@ -133,6 +134,7 @@ def test_weather_forecast_uses_forecast_api():
 
 
 def test_online_permission_override_enables_device_tools(monkeypatch):
+    monkeypatch.setattr(runtime, "ONLINE_PERMISSION_OVERRIDE", False)
     kwargs = {"capabilities": {"vision": True}, "isolation_warning": None}
     names = ("fetch_current_location", "capture_webcam_image")
     for name in names:

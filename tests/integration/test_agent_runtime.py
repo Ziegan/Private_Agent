@@ -68,6 +68,7 @@ def scripted_local_cli(monkeypatch, tmp_path):
     monkeypatch.setattr(agent, "WORKSPACE_ROOT_DEFAULT", str(workspace))
     monkeypatch.setattr(agent, "MCP_SERVERS", {})
     monkeypatch.setattr(agent, "AGENT_PERMISSION_MODE", "auto")
+    monkeypatch.setattr(agent, "APP_CONFIG", {})
     monkeypatch.setattr(agent, "_offer_local_data_reset", lambda memory: None)
     monkeypatch.setattr(agent, "set_active_db_path", lambda path: None)
     from private_agent.tools import _sqlite_state
@@ -459,7 +460,7 @@ async def test_startup_reports_task_plan_counts_without_printing_goals(
     )
     inputs.side_effect = ["", "", "", "1", ""]
 
-    await run_agent_cli_async()
+    await run_agent_cli_async(verbose_startup=True)
 
     output = "\n".join(printed)
     assert "2 total | 1 approved | 1 not approved" in output
@@ -498,7 +499,7 @@ async def test_cli_uses_configured_rag_path_or_explicit_project_override(
     )
     inputs.side_effect = [rag_input, "", "", "1", ""]
 
-    await run_agent_cli_async()
+    await run_agent_cli_async(verbose_startup=True)
 
     initialize.assert_called_once()
     assert initialize.call_args.args == (expected_path,)
@@ -2738,7 +2739,7 @@ async def test_repeated_cli_runs_remove_mcp_tools_and_sandboxes(
     monkeypatch.setattr(agent, "load_configured_mcp_tools", load_server)
     prompt_calls = []
 
-    async def prompt(_console, _root, prompt_message, skills=None):
+    async def prompt(_console, _root, prompt_message, skills=None, history=None):
         prompt_calls.append(prompt_message)
         return "exit"
 
@@ -3078,6 +3079,31 @@ async def test_cli_does_not_call_web_tool_after_online_consent_decline(
     monkeypatch.setattr(agent, "ENABLE_WEB_RESEARCH", True)
     monkeypatch.setattr(agent, "WEB_RESEARCH_CONSENT", "ask")
     monkeypatch.setattr(agent, "has_internet_connection", lambda: True)
+    monkeypatch.setattr(agent, "APP_CONFIG", {})
+    monkeypatch.setattr(agent, "_discover_available_local_runtimes", lambda: [])
+    monkeypatch.setattr(
+        agent,
+        "select_online_model",
+        MagicMock(
+            return_value={
+                "model": model,
+                "model_name": "mock-online-model",
+                "base_url": "https://api.example.test/v1",
+                "capabilities": {
+                    "tools": True,
+                    "function_calls": True,
+                    "structured_output": False,
+                    "thinking": False,
+                    "vision": False,
+                    "audio": False,
+                    "context_window": None,
+                },
+                "allow_tools": True,
+                "share_context": False,
+                "enforce_tool_call_limits": False,
+            }
+        ),
+    )
     model.responses = [
         AIMessage(
             content="",
@@ -3949,6 +3975,8 @@ async def test_online_cli_uses_mock_http_boundary_without_unapproved_history(
             return "y" if share_context else "n"
         if "Allow this online model to call local/MCP tools" in prompt:
             return "y" if post_status == "tool" else "n"
+        if "Apply configured limits to this online model" in prompt:
+            return "n"
         raise AssertionError(f"Unexpected CLI input prompt: {prompt}")
 
     inputs.side_effect = online_cli_input
