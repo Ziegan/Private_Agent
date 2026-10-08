@@ -1,62 +1,96 @@
 import pathlib
 import tempfile
-import time
+from collections import Counter
 
 import pytest
-from rich.console import Console
-from rich.panel import Panel
 
 from private_agent.sandbox import SandboxManager
 from private_agent.tools import set_active_db_path
 
-console = Console()
-
-
-class SessionTracker:
-    def __init__(self):
-        self.passed = 0
-        self.failed = 0
-        self.start_time = time.time()
-        self.current_test = ""
-
-
-@pytest.fixture(scope="session")
-def session_tracker():
-    tracker = SessionTracker()
-    yield tracker
-    duration = time.time() - tracker.start_time
-    total = tracker.passed + tracker.failed
-    summary_text = (
-        f"[bold]Total Tests Executed:[/bold] {total}\n"
-        f"[bold green]Passed:[/bold green] {tracker.passed}\n"
-        f"[bold red]Failed:[/bold red] {tracker.failed}\n"
-        f"[bold cyan]Total Duration:[/bold cyan] {duration:.2f}s"
+_TEST_CATEGORIES = {
+    "test_agent_runtime": "Agent runtime",
+    "test_benchmark_rag": "RAG benchmarks",
+    "test_chunking": "RAG chunking",
+    "test_cli": "CLI",
+    "test_code_tasks": "Code tasks",
+    "test_compaction": "Context compaction",
+    "test_config": "Configuration",
+    "test_contracts": "Contracts",
+    "test_database": "Database and memory",
+    "test_hardware": "Hardware",
+    "test_interactive": "Interactive UX",
+    "test_location": "Location and weather",
+    "test_media": "Media",
+    "test_network": "Network",
+    "test_project_paths": "Project resources",
+    "test_providers": "Model providers",
+    "test_rag": "RAG",
+    "test_session_stats": "Session statistics",
+    "test_skills": "Skills",
+    "test_tools": "Tools",
+}
+def _test_category(nodeid):
+    module = nodeid.split("::", 1)[0]
+    name = pathlib.Path(module).stem
+    return _TEST_CATEGORIES.get(
+        name,
+        name.removeprefix("test_").replace("_", " ").title() or "Other",
     )
-    console.print(
-        Panel(summary_text, title="Test Suite Summary Report", border_style="cyan")
-    )
 
 
-@pytest.fixture(autouse=True)
-def track_test_progress(request, session_tracker):
-    test_name = request.node.name
-    session_tracker.current_test = test_name
-    console.print(
-        f"[yellow][RUNNING][/yellow] Executing test: [bold]{test_name}[/bold]..."
-    )
-    started = time.time()
-    try:
-        yield
-        elapsed = time.time() - started
-        session_tracker.passed += 1
-        console.print(f"[green][PASSED][/green] {test_name} ({elapsed:.3f}s)\n")
-    except Exception as exc:
-        elapsed = time.time() - started
-        session_tracker.failed += 1
-        console.print(
-            f"[red][FAILED][/red] {test_name} ({elapsed:.3f}s) - Error: {exc}\n"
+@pytest.hookimpl(trylast=True)
+def pytest_terminal_summary(terminalreporter):
+    categorized = {}
+    completed = {}
+    for outcome in ("passed", "skipped", "failed"):
+        for report in terminalreporter.stats.get(outcome, []):
+            result_outcome = (
+                "xfailed"
+                if outcome == "skipped" and hasattr(report, "wasxfail")
+                else outcome
+            )
+            previous = completed.get(report.nodeid)
+            if (
+                previous is None
+                or previous["outcome"] != "failed"
+                or outcome == "failed"
+            ):
+                completed[report.nodeid] = {
+                    "category": _test_category(report.nodeid),
+                    "outcome": result_outcome,
+                }
+    for result in completed.values():
+        counts = categorized.setdefault(result["category"], Counter())
+        counts[result["outcome"]] += 1
+
+    totals = Counter(result["outcome"] for result in completed.values())
+    terminalreporter.write_sep("=", "Test results by functional category")
+    terminalreporter.write_line(
+        "Total: {total} | Passed: {passed} | Failed: {failed} | "
+        "Skipped: {skipped} | XFailed: {xfailed}".format(
+            total=sum(totals.values()),
+            passed=totals["passed"],
+            failed=totals["failed"],
+            skipped=totals["skipped"],
+            xfailed=totals["xfailed"],
         )
-        raise
+    )
+    for category in sorted(categorized):
+        counts = categorized[category]
+        terminalreporter.write_line(
+            f"{category}: {counts['passed']} passed, {counts['failed']} failed, "
+            f"{counts['skipped']} skipped, {counts['xfailed']} xfailed"
+        )
+
+    failures = sorted(
+        nodeid
+        for nodeid, result in completed.items()
+        if result["outcome"] == "failed"
+    )
+    if failures:
+        terminalreporter.write_sep("!", "Failed tests")
+        for nodeid in failures:
+            terminalreporter.write_line(nodeid)
 
 
 @pytest.fixture

@@ -240,6 +240,9 @@ pytest -k "permission and full" -q                # filter by name
 ruff check src tests --select F                   # lint for real errors
 ```
 
+The final pytest summary includes counts by functional test category and lists
+every failed test by node ID. Pytest also prints failure details and warnings.
+
 With `uv`, use `uv run pytest -q`.
 
 ### Sync requirements (`scripts/sync_requirements.py`)
