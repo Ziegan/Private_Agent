@@ -506,3 +506,28 @@ media, memory, planning, schemas), `database/memory.py` (SQLite),
 isolation), `code_tasks/` (workspaces, checkpoints, tests), `hardware/`.
 `main.py` is a source-checkout launcher; `scripts/` holds
 `benchmark_rag.py` and `sync_requirements.py`; tests are in `tests/`.
+
+## 🤝 Contributing
+
+Contributions are welcome from developers, researchers, security professionals, AI enthusiasts, and open-source contributors of all experience levels.
+
+Whether you want to:
+
+- Fix bugs
+- Improve documentation
+- Add new tools or integrations
+- Enhance security controls
+- Improve agent capabilities
+- Add MCP-compatible services
+- Optimize performance
+- Expand test coverage
+
+Your contributions are appreciated.
+
+### Getting Started
+
+1. Fork the repository.
+2. Create a feature branch.
+
+```bash
+git checkout -b feature/my-feature
