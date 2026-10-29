@@ -29,14 +29,34 @@ GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 WEATHER_CODES = {
-    0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
-    45: "fog", 48: "rime fog", 51: "light drizzle", 53: "drizzle",
-    55: "dense drizzle", 56: "freezing drizzle", 57: "dense freezing drizzle",
-    61: "light rain", 63: "rain", 65: "heavy rain", 66: "freezing rain",
-    67: "heavy freezing rain", 71: "light snow", 73: "snow", 75: "heavy snow",
-    77: "snow grains", 80: "light showers", 81: "showers", 82: "violent showers",
-    85: "light snow showers", 86: "heavy snow showers", 95: "thunderstorm",
-    96: "thunderstorm with hail", 99: "severe thunderstorm with hail",
+    0: "clear sky",
+    1: "mainly clear",
+    2: "partly cloudy",
+    3: "overcast",
+    45: "fog",
+    48: "rime fog",
+    51: "light drizzle",
+    53: "drizzle",
+    55: "dense drizzle",
+    56: "freezing drizzle",
+    57: "dense freezing drizzle",
+    61: "light rain",
+    63: "rain",
+    65: "heavy rain",
+    66: "freezing rain",
+    67: "heavy freezing rain",
+    71: "light snow",
+    73: "snow",
+    75: "heavy snow",
+    77: "snow grains",
+    80: "light showers",
+    81: "showers",
+    82: "violent showers",
+    85: "light snow showers",
+    86: "heavy snow showers",
+    95: "thunderstorm",
+    96: "thunderstorm with hail",
+    99: "severe thunderstorm with hail",
 }
 
 
@@ -71,13 +91,24 @@ def _get_json(url: str, params: Optional[dict] = None) -> Any:
 
 
 def _number(value: Any) -> Optional[float]:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    return (
+        float(value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        else None
+    )
 
 
 def _parse_ip_location(payload: Any, service: str) -> Optional[dict]:
-    if not isinstance(payload, dict) or payload.get("success") is False or payload.get("error"):
+    if (
+        not isinstance(payload, dict)
+        or payload.get("success") is False
+        or payload.get("error")
+    ):
         return None
-    latitude, longitude = _number(payload.get("latitude")), _number(payload.get("longitude"))
+    latitude, longitude = (
+        _number(payload.get("latitude")),
+        _number(payload.get("longitude")),
+    )
     if latitude is None or longitude is None:
         return None
     timezone = payload.get("timezone")
@@ -111,7 +142,13 @@ def locate_current_position() -> dict:
 
 def _describe_location(location: dict) -> str:
     name = ", ".join(
-        part for part in (location.get("city"), location.get("region"), location.get("country")) if part
+        part
+        for part in (
+            location.get("city"),
+            location.get("region"),
+            location.get("country"),
+        )
+        if part
     )
     return f"{name or 'Unnamed place'} ({location['latitude']:.4f}, {location['longitude']:.4f})"
 
@@ -186,15 +223,22 @@ def _fmt(value: Any, unit: str = "") -> str:
 
 
 def format_weather(
-    location: dict, payload: dict, first: date, last: date, hour: Optional[int], today: date
+    location: dict,
+    payload: dict,
+    first: date,
+    last: date,
+    hour: Optional[int],
+    today: date,
 ) -> str:
     daily = payload.get("daily") or {}
     times = daily.get("time") or []
     if not times:
         return "No weather data was returned for that date range."
     kind = (
-        "Weather history" if last < today
-        else "Weather forecast" if first > today
+        "Weather history"
+        if last < today
+        else "Weather forecast"
+        if first > today
         else "Weather"
     )
     lines = [
@@ -202,6 +246,7 @@ def format_weather(
         + (f", timezone {payload.get('timezone')}" if payload.get("timezone") else "")
     ]
     for index, day in enumerate(times):
+
         def column(name):
             values = daily.get(name) or []
             return values[index] if index < len(values) else None
@@ -244,12 +289,18 @@ def fetch_weather(
     location: dict, first: date, last: date, hour: Optional[int], today: date
 ) -> str:
     daily = [
-        "weather_code", "temperature_2m_max", "temperature_2m_min",
-        "precipitation_sum", "wind_speed_10m_max",
+        "weather_code",
+        "temperature_2m_max",
+        "temperature_2m_min",
+        "precipitation_sum",
+        "wind_speed_10m_max",
     ]
     hourly = [
-        "weather_code", "temperature_2m", "relative_humidity_2m",
-        "precipitation", "wind_speed_10m",
+        "weather_code",
+        "temperature_2m",
+        "relative_humidity_2m",
+        "precipitation",
+        "wind_speed_10m",
     ]
     historical = first < today - timedelta(days=FORECAST_API_PAST_DAYS)
     if not historical:

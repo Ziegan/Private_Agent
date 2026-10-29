@@ -49,9 +49,7 @@ _SKIP_DIRECTORIES = {
     "target",
 }
 _SYMBOL_DECLARATIONS = {
-    ".py": re.compile(
-        r"^\s*(?:async\s+)?(?:def|class)\s+(?P<name>[A-Za-z_]\w*)\b"
-    ),
+    ".py": re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+(?P<name>[A-Za-z_]\w*)\b"),
     ".js": re.compile(
         r"^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?"
         r"(?:function|class)\s+(?P<name>[A-Za-z_$][\w$]*)\b"
@@ -191,7 +189,10 @@ def _read_workspace_text(target: Path, file_path: str) -> str:
 
 def _exact_patch(target: Path, file_path: str, old_text: str, new_text: str):
     current = _read_workspace_text(target, file_path)
-    if len(old_text.encode("utf-8")) + len(new_text.encode("utf-8")) > MAX_READ_FILE_BYTES:
+    if (
+        len(old_text.encode("utf-8")) + len(new_text.encode("utf-8"))
+        > MAX_READ_FILE_BYTES
+    ):
         raise ValueError("Patch content exceeds the configured file size limit.")
     occurrences = current.count(old_text)
     if occurrences != 1:
@@ -353,7 +354,9 @@ def _read_file_descriptor(file_fd: int, file_stat: os.stat_result) -> str:
         )
     chunks = []
     offset = 0
-    while chunk := os.pread(file_fd, min(FILE_READ_CHUNK_BYTES, MAX_READ_FILE_BYTES + 1 - offset), offset):
+    while chunk := os.pread(
+        file_fd, min(FILE_READ_CHUNK_BYTES, MAX_READ_FILE_BYTES + 1 - offset), offset
+    ):
         chunks.append(chunk)
         offset += len(chunk)
         if offset > MAX_READ_FILE_BYTES:
@@ -407,7 +410,9 @@ def _write_workspace_replacement(
             current_stat = None
         if expected_stat is None:
             if current_stat is not None:
-                raise FileExistsError("Workspace destination appeared during the write.")
+                raise FileExistsError(
+                    "Workspace destination appeared during the write."
+                )
             os.link(
                 temporary_name,
                 name,
@@ -463,11 +468,10 @@ def _write_workspace_file_safely(file_path: str, content: bytes) -> None:
                 dir_fd=parent_fd,
             )
             opened_stat = os.fstat(file_fd)
-            if (
-                (opened_stat.st_dev, opened_stat.st_ino)
-                != (original_stat.st_dev, original_stat.st_ino)
-                or opened_stat.st_nlink > 1
-            ):
+            if (opened_stat.st_dev, opened_stat.st_ino) != (
+                original_stat.st_dev,
+                original_stat.st_ino,
+            ) or opened_stat.st_nlink > 1:
                 raise OSError("Workspace file changed before the write.")
             _snapshot_file_descriptor(file_fd, name)
         _write_workspace_replacement(parent_fd, name, original_stat, content)
@@ -482,11 +486,10 @@ def _delete_workspace_file_safely(file_path: str) -> None:
     try:
         _snapshot_file_descriptor(file_fd, name)
         current_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        if (
-            not stat.S_ISREG(current_stat.st_mode)
-            or (current_stat.st_dev, current_stat.st_ino)
-            != (original_stat.st_dev, original_stat.st_ino)
-        ):
+        if not stat.S_ISREG(current_stat.st_mode) or (
+            current_stat.st_dev,
+            current_stat.st_ino,
+        ) != (original_stat.st_dev, original_stat.st_ino):
             raise OSError("Workspace file changed during deletion.")
         os.unlink(name, dir_fd=parent_fd)
     finally:
@@ -504,7 +507,10 @@ def _apply_workspace_patch_safely(
         if original_stat.st_nlink > 1:
             raise ValueError("Files with multiple hard links are not modified.")
         current = _read_file_descriptor(file_fd, original_stat)
-        if len(old_text.encode("utf-8")) + len(new_text.encode("utf-8")) > MAX_READ_FILE_BYTES:
+        if (
+            len(old_text.encode("utf-8")) + len(new_text.encode("utf-8"))
+            > MAX_READ_FILE_BYTES
+        ):
             raise ValueError("Patch content exceeds the configured file size limit.")
         occurrences = current.count(old_text)
         if occurrences != 1:
@@ -514,7 +520,9 @@ def _apply_workspace_patch_safely(
         updated = current.replace(old_text, new_text, 1)
         updated_bytes = updated.encode("utf-8")
         if len(updated_bytes) > MAX_READ_FILE_BYTES:
-            raise ValueError("Patched file would exceed the configured file size limit.")
+            raise ValueError(
+                "Patched file would exceed the configured file size limit."
+            )
         diff = "".join(
             difflib.unified_diff(
                 current.splitlines(keepends=True),
@@ -554,9 +562,7 @@ def _rename_workspace_file_safely(source_path: str, destination_path: str) -> st
         except FileNotFoundError:
             pass
         else:
-            raise FileExistsError(
-                f"Destination '{destination_path}' already exists."
-            )
+            raise FileExistsError(f"Destination '{destination_path}' already exists.")
 
         _snapshot_file_descriptor(source_fd, source_name)
         os.link(
@@ -572,22 +578,20 @@ def _rename_workspace_file_safely(source_path: str, destination_path: str) -> st
                 dir_fd=destination_parent_fd,
                 follow_symlinks=False,
             )
-            if (
-                not stat.S_ISREG(linked_stat.st_mode)
-                or (linked_stat.st_dev, linked_stat.st_ino)
-                != (source_stat.st_dev, source_stat.st_ino)
-            ):
+            if not stat.S_ISREG(linked_stat.st_mode) or (
+                linked_stat.st_dev,
+                linked_stat.st_ino,
+            ) != (source_stat.st_dev, source_stat.st_ino):
                 raise OSError("Source file changed during the rename.")
             current_source_stat = os.stat(
                 source_name,
                 dir_fd=source_parent_fd,
                 follow_symlinks=False,
             )
-            if (
-                not stat.S_ISREG(current_source_stat.st_mode)
-                or (current_source_stat.st_dev, current_source_stat.st_ino)
-                != (source_stat.st_dev, source_stat.st_ino)
-            ):
+            if not stat.S_ISREG(current_source_stat.st_mode) or (
+                current_source_stat.st_dev,
+                current_source_stat.st_ino,
+            ) != (source_stat.st_dev, source_stat.st_ino):
                 raise OSError("Source file changed during the rename.")
             os.unlink(source_name, dir_fd=source_parent_fd)
         except Exception:
@@ -804,11 +808,12 @@ def search_workspace_symbols(
                 continue
             for line_number, line in enumerate(lines, start=1):
                 declaration = declaration_pattern.match(line)
-                if declaration is None or declaration.group("name").casefold() != expected_name:
+                if (
+                    declaration is None
+                    or declaration.group("name").casefold() != expected_name
+                ):
                     continue
-                matches.append(
-                    f"{relative}:{line_number}: {line.strip()[:300]}"
-                )
+                matches.append(f"{relative}:{line_number}: {line.strip()[:300]}")
                 if len(matches) >= limit:
                     break
             if len(matches) >= limit:
@@ -848,16 +853,16 @@ def inspect_workspace_git(action: str, directory: str = ".") -> str:
             "GIT_TERMINAL_PROMPT": "0",
         }
         repository_command = [
-                "git",
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                "core.pager=cat",
-                "-C",
-                str(target),
-                "rev-parse",
-                "--show-toplevel",
-            ]
+            "git",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.pager=cat",
+            "-C",
+            str(target),
+            "rev-parse",
+            "--show-toplevel",
+        ]
         repository_code, repository_output, _, repository_timeout = _run_git_bounded(
             repository_command,
             environment,
@@ -870,15 +875,15 @@ def inspect_workspace_git(action: str, directory: str = ".") -> str:
         if not repository_root.is_relative_to(root):
             return "Error: Git repository root is outside the active workspace."
         git_command = [
-                "git",
-                "-c",
-                "core.fsmonitor=false",
-                "-c",
-                "core.pager=cat",
-                "-C",
-                str(target),
-                *commands[action],
-            ]
+            "git",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.pager=cat",
+            "-C",
+            str(target),
+            *commands[action],
+        ]
         result_code, output, truncated, timed_out = _run_git_bounded(
             git_command,
             environment,

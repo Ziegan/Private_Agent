@@ -64,9 +64,7 @@ def inspect_local_model_capabilities(
     if not raw_capabilities:
         model_info = _response_field(details, "modelinfo", {}) or {}
         raw_capabilities = (
-            model_info.get("capabilities", [])
-            if isinstance(model_info, dict)
-            else []
+            model_info.get("capabilities", []) if isinstance(model_info, dict) else []
         )
     model_info = _response_field(details, "modelinfo", {}) or {}
     if isinstance(model_info, dict):
@@ -241,9 +239,7 @@ def create_robust_local_chat_model(
             if model_name == primary_model_name and not retryable:
                 break
     if last_error:
-        console.print(
-            f"[red][Model error] No usable local model: {last_error}[/red]"
-        )
+        console.print(f"[red][Model error] No usable local model: {last_error}[/red]")
     return None
 
 
@@ -256,7 +252,9 @@ def validate_online_base_url(base_url: str) -> str:
     except ValueError as exc:
         raise ValueError("The API base URL contains an invalid port.") from exc
     if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ValueError("The API base URL must not contain credentials, query, or fragment data.")
+        raise ValueError(
+            "The API base URL must not contain credentials, query, or fragment data."
+        )
     host = parsed.hostname.lower()
     is_local = host in {"localhost", "127.0.0.1", "::1"}
     if parsed.scheme != "https" and not is_local:
@@ -296,7 +294,8 @@ def online_request_failure(exc: Exception) -> str:
     }
     explanation = explanations.get(
         status_code,
-        "the provider returned a server error" if status_code >= 500
+        "the provider returned a server error"
+        if status_code >= 500
         else "the provider rejected the request",
     )
     return (
@@ -353,9 +352,7 @@ def select_online_model(
         app_config.get("online_api_key"),
     )
     configured_key = (
-        configured_key_value.strip()
-        if isinstance(configured_key_value, str)
-        else ""
+        configured_key_value.strip() if isinstance(configured_key_value, str) else ""
     )
     if use_saved_details is True and not configured_key:
         console.print(
@@ -367,16 +364,22 @@ def select_online_model(
     if use_saved_details is False:
         use_configured = False
     elif use_saved_details is None and configured_key:
-        answer = console.input(
-            f"[cyan]Online configuration: 1. Use saved details ({configured_url}; "
-            "key hidden), 2. Enter URL and key manually [1]: [/cyan]"
-        ).strip().lower()
+        answer = (
+            console.input(
+                f"[cyan]Online configuration: 1. Use saved details ({configured_url}; "
+                "key hidden), 2. Enter URL and key manually [1]: [/cyan]"
+            )
+            .strip()
+            .lower()
+        )
         if answer in {"", "1", "y", "yes"}:
             use_configured = True
         elif answer in {"2", "n", "no"}:
             use_configured = False
         else:
-            console.print("[red]Choose 1 for saved details or 2 for manual entry.[/red]")
+            console.print(
+                "[red]Choose 1 for saved details or 2 for manual entry.[/red]"
+            )
             return None
 
     if use_configured:
@@ -402,22 +405,34 @@ def select_online_model(
     while not check_connection(
         parsed_endpoint.hostname or "", endpoint_port, connection_timeout
     ):
-        choice = console.input(
-            "[yellow]The selected API endpoint is not reachable. Restore access and "
-            "retry (r), or return to local model selection (l)? [/yellow]"
-        ).strip().lower()
+        choice = (
+            console.input(
+                "[yellow]The selected API endpoint is not reachable. Restore access and "
+                "retry (r), or return to local model selection (l)? [/yellow]"
+            )
+            .strip()
+            .lower()
+        )
         if choice != "r":
             return None
 
     host = parsed_endpoint.netloc
-    if not use_configured and console.input(
-        f"[yellow]Online mode will send requests to {host}. Continue? \\[y/N]: [/yellow]"
-    ).strip().lower() != "y":
+    if (
+        not use_configured
+        and console.input(
+            f"[yellow]Online mode will send requests to {host}. Continue? \\[y/N]: [/yellow]"
+        )
+        .strip()
+        .lower()
+        != "y"
+    ):
         return None
 
-    api_key = configured_key if use_configured else get_api_key(
-        "API key (input hidden; used for this session only): "
-    ).strip()
+    api_key = (
+        configured_key
+        if use_configured
+        else get_api_key("API key (input hidden; used for this session only): ").strip()
+    )
     if not api_key:
         console.print("[red]No API key entered; returning to model selection.[/red]")
         return None
@@ -435,7 +450,8 @@ def select_online_model(
             response.raise_for_status()
             body = response.json()
         model_choices = [
-            item["id"] for item in body.get("data", [])
+            item["id"]
+            for item in body.get("data", [])
             if isinstance(item, dict) and isinstance(item.get("id"), str)
         ]
     except httpx.HTTPStatusError as exc:
@@ -490,9 +506,12 @@ def select_online_model(
         else:
             model_name = model_input or default_model
     else:
-        model_name = console.input(
-            f"[cyan]Model identifier [{configured_model or 'enter model name'}]: [/cyan]"
-        ).strip() or configured_model
+        model_name = (
+            console.input(
+                f"[cyan]Model identifier [{configured_model or 'enter model name'}]: [/cyan]"
+            ).strip()
+            or configured_model
+        )
     if not model_name:
         console.print("[red]A model identifier is required.[/red]")
         return None
@@ -502,10 +521,15 @@ def select_online_model(
         "history, summaries, skills, and RAG documents are excluded unless you "
         "opt in. Local tool calls can send tool arguments/results to this provider.[/yellow]"
     )
-    share_context = console.input(
-        "[yellow]Allow this online model to receive local history and retrieved "
-        "RAG context for this session? \\[y/N]: [/yellow]"
-    ).strip().lower() == "y"
+    share_context = (
+        console.input(
+            "[yellow]Allow this online model to receive local history and retrieved "
+            "RAG context for this session? \\[y/N]: [/yellow]"
+        )
+        .strip()
+        .lower()
+        == "y"
+    )
     if permission_override:
         allow_tools = True
         console.print(
@@ -515,19 +539,29 @@ def select_online_model(
             "permission-mode approvals still apply.[/yellow]"
         )
     else:
-        allow_tools = console.input(
-            "[yellow]Allow this online model to call local/MCP tools? Their arguments "
-            "and results will be sent to the provider. \\[y/N]: [/yellow]"
-        ).strip().lower() == "y"
+        allow_tools = (
+            console.input(
+                "[yellow]Allow this online model to call local/MCP tools? Their arguments "
+                "and results will be sent to the provider. \\[y/N]: [/yellow]"
+            )
+            .strip()
+            .lower()
+            == "y"
+        )
 
     enforce_tool_call_limits = False
     if allow_tools:
-        enforce_tool_call_limits = console.input(
-            "[yellow]Apply configured limits to this online model "
-            f"({max_tool_iterations} tool rounds and {max_tool_calls} tool calls "
-            "per request)? Choose No to leave counts uncapped; request time and "
-            "permission checks still apply. \\[y/N]: [/yellow]"
-        ).strip().lower() == "y"
+        enforce_tool_call_limits = (
+            console.input(
+                "[yellow]Apply configured limits to this online model "
+                f"({max_tool_iterations} tool rounds and {max_tool_calls} tool calls "
+                "per request)? Choose No to leave counts uncapped; request time and "
+                "permission checks still apply. \\[y/N]: [/yellow]"
+            )
+            .strip()
+            .lower()
+            == "y"
+        )
 
     try:
         model = model_factory(base_url, model_name, api_key)

@@ -62,7 +62,10 @@ def load_labeled_queries(query_file: Path) -> list[dict[str, Any]]:
             not isinstance(expected_sources, list)
             or not expected_sources
             or len(expected_sources) > 100
-            or any(not isinstance(source, str) or not source.strip() for source in expected_sources)
+            or any(
+                not isinstance(source, str) or not source.strip()
+                for source in expected_sources
+            )
         ):
             raise ValueError(
                 f"Query entry {index + 1} needs 1–100 expected_sources strings."
@@ -75,9 +78,7 @@ def load_labeled_queries(query_file: Path) -> list[dict[str, Any]]:
                     f"Expected source '{source}' must be relative to the documents folder."
                 )
             normalized_sources.add(path.as_posix())
-        queries.append(
-            {"query": query.strip(), "expected_sources": normalized_sources}
-        )
+        queries.append({"query": query.strip(), "expected_sources": normalized_sources})
     return queries
 
 
@@ -208,7 +209,9 @@ def main(argv=None) -> int:
             table.add_row("Median retrieval", f"{metrics['median_latency_ms']:.2f} ms")
             table.add_row("Mean retrieval", f"{metrics['mean_latency_ms']:.2f} ms")
             table.add_row("Mean recall@k", f"{metrics['mean_recall_at_k']:.3f}")
-            table.add_row("Mean reciprocal rank", f"{metrics['mean_reciprocal_rank']:.3f}")
+            table.add_row(
+                "Mean reciprocal rank", f"{metrics['mean_reciprocal_rank']:.3f}"
+            )
             console.print(table)
             console.print(
                 "[bold cyan]Ollama hardware status[/bold cyan]\n"

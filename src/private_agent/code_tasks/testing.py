@@ -30,13 +30,14 @@ def run_project_tests(
     files = []
     for path in _project_files(workspace.root):
         relative_path = path.relative_to(workspace.root).as_posix()
-        if (
-            _TEST_FILE.search(relative_path)
-            and not _is_git_ignored(workspace.root, relative_path)
+        if _TEST_FILE.search(relative_path) and not _is_git_ignored(
+            workspace.root, relative_path
         ):
             files.append(relative_path)
     if not files:
-        return "No unit-test file found. Add or update a unit test before checkpointing."
+        return (
+            "No unit-test file found. Add or update a unit test before checkpointing."
+        )
 
     for current_root, directories, _ in os.walk(workspace.root):
         directories[:] = [
@@ -73,7 +74,9 @@ def run_project_tests(
         try:
             package_config = json.loads(package_json.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            workspace.last_test_result = f"Tests unavailable: package.json is unreadable: {exc}"
+            workspace.last_test_result = (
+                f"Tests unavailable: package.json is unreadable: {exc}"
+            )
             return workspace.last_test_result
         if (
             isinstance(package_config, dict)
@@ -96,15 +99,14 @@ def run_project_tests(
     )
     commands = list(
         dict.fromkeys(
-            tuple(command) if command is not None else None
-            for command in commands
+            tuple(command) if command is not None else None for command in commands
         )
     )
-    commands = [
-        list(command) if command is not None else None for command in commands
-    ]
+    commands = [list(command) if command is not None else None for command in commands]
     if not commands:
-        workspace.last_test_result = "Could not identify a test runner for this project."
+        workspace.last_test_result = (
+            "Could not identify a test runner for this project."
+        )
         return workspace.last_test_result
 
     failures = []
@@ -136,9 +138,7 @@ def run_project_tests(
             failures.append(f"{' '.join(command)} timed out after {timeout} seconds")
             continue
         except (OSError, RuntimeError) as exc:
-            failures.append(
-                f"{' '.join(command)} could not run in isolation: {exc}"
-            )
+            failures.append(f"{' '.join(command)} could not run in isolation: {exc}")
             continue
         output = (result.stdout + result.stderr).strip()
         if result.returncode == 0:

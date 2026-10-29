@@ -544,15 +544,14 @@ def validate_explicit_service_url(url: str, transports: set[str]) -> str:
     )
 
 
-async def _get_limited_response(
-    client, url: str, max_bytes: int
-) -> tuple[bytes, str]:
+async def _get_limited_response(client, url: str, max_bytes: int) -> tuple[bytes, str]:
     acquired = await asyncio.to_thread(
         _network_slots.acquire, True, NETWORK_REQUEST_TIMEOUT
     )
     if not acquired:
         raise TimeoutError("Outbound request concurrency limit wait timed out.")
     try:
+
         async def request_with_redirects():
             current_url = await _validate_outbound_url_async(url)
             for redirect_count in range(MAX_HTTP_REDIRECTS + 1):
@@ -600,9 +599,7 @@ def search_duckduckgo(query: str, client_factory=public_only_sync_client) -> str
     if not acquired:
         raise TimeoutError("Outbound request concurrency limit wait timed out.")
     try:
-        current_url = _normalize_outbound_url(
-            "https://html.duckduckgo.com/html/"
-        )
+        current_url = _normalize_outbound_url("https://html.duckduckgo.com/html/")
         with client_factory(
             headers={"User-Agent": "PrivateAgent/1.0"},
             timeout=httpx.Timeout(NETWORK_REQUEST_TIMEOUT),

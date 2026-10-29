@@ -44,9 +44,12 @@ console = Console()
 
 
 SQLITE_EXTENSIONS = frozenset({".db", ".sqlite", ".sqlite3", ".db3"})
-SUPPORTED_EXTENSIONS = frozenset(
-    {".pdf", ".txt", ".md", ".py", ".json", ".csv", ".rs", ".js", ".ts", ".html"}
-) | SQLITE_EXTENSIONS
+SUPPORTED_EXTENSIONS = (
+    frozenset(
+        {".pdf", ".txt", ".md", ".py", ".json", ".csv", ".rs", ".js", ".ts", ".html"}
+    )
+    | SQLITE_EXTENSIONS
+)
 _SQLITE_HEADER = b"SQLite format 3\x00"
 _SQLITE_ROWS_PER_CHUNK = 10
 _SQLITE_MAX_CELL_CHARS = 200
@@ -174,7 +177,10 @@ def _read_sqlite_pages(file_path: pathlib.Path) -> list:
                 pages.append((f"SQLite table {table}\n" + "\n".join(batch), None))
             if not rows_seen:
                 pages.append(
-                    (f"SQLite table {table} (columns: {', '.join(columns)}; no rows)", None)
+                    (
+                        f"SQLite table {table} (columns: {', '.join(columns)}; no rows)",
+                        None,
+                    )
                 )
         return pages
     finally:
@@ -208,7 +214,9 @@ def load_chunking_settings() -> ChunkingSettings:
             strategy=CHUNKING_STRATEGY,
             chunk_size=CHUNKING_SIZE,
             chunk_overlap=CHUNKING_OVERLAP,
-            unit=CHUNKING_UNIT if CHUNKING_UNIT in ("chars", "words", "tokens") else "chars",
+            unit=CHUNKING_UNIT
+            if CHUNKING_UNIT in ("chars", "words", "tokens")
+            else "chars",
             min_chunk_chars=CHUNKING_MIN_CHUNK_CHARS,
             separators=CHUNKING_SEPARATORS,
             semantic_breakpoint_percentile=CHUNKING_SEMANTIC_PERCENTILE,
@@ -303,7 +311,9 @@ def initialize_knowledge_base(
 
     path = pathlib.Path(docs_path).expanduser().resolve()
     if not path.is_dir():
-        console.print(f"[yellow][Warning] Provided KB path '{path}' is not a valid directory. Skipping knowledge base initialization.[/yellow]")
+        console.print(
+            f"[yellow][Warning] Provided KB path '{path}' is not a valid directory. Skipping knowledge base initialization.[/yellow]"
+        )
         return None
 
     chroma_persist_dir = os.path.abspath(index_path or RAG_INDEX_PATH)
@@ -329,7 +339,9 @@ def initialize_knowledge_base(
         )
         index_state = {}
 
-    console.print(f"[cyan][Info] Initializing local embedding model '{EMBEDDING_MODEL}' via Ollama...[/cyan]")
+    console.print(
+        f"[cyan][Info] Initializing local embedding model '{EMBEDDING_MODEL}' via Ollama...[/cyan]"
+    )
     try:
         embeddings = OllamaEmbeddings(
             model=EMBEDDING_MODEL,
@@ -342,9 +354,13 @@ def initialize_knowledge_base(
         console.print(f"[red][Error] Could not bind embedding model: {e}[/red]")
         return None
 
-    console.print(f"[bold green][Chroma DB][/bold green] Initializing local project vector store at: [cyan]{chroma_persist_dir}[/cyan]")
+    console.print(
+        f"[bold green][Chroma DB][/bold green] Initializing local project vector store at: [cyan]{chroma_persist_dir}[/cyan]"
+    )
 
-    db_exists = os.path.exists(chroma_persist_dir) and any(f for f in os.listdir(chroma_persist_dir) if f != ".index_state.json")
+    db_exists = os.path.exists(chroma_persist_dir) and any(
+        f for f in os.listdir(chroma_persist_dir) if f != ".index_state.json"
+    )
 
     changed_docs = []
     all_parsed_docs = []
@@ -381,6 +397,7 @@ def initialize_knowledge_base(
             if ext == ".pdf":
                 try:
                     from pypdf import PdfReader
+
                     reader = PdfReader(str(file_path))
                     if len(reader.pages) > RAG_MAX_PDF_PAGES:
                         console.print(
@@ -394,7 +411,9 @@ def initialize_knowledge_base(
                         for page_number, page in enumerate(reader.pages, 1)
                     ]
                 except ImportError:
-                    console.print(f"[yellow][Warning] pypdf not installed, skipping PDF: {file_path.name}[/yellow]")
+                    console.print(
+                        f"[yellow][Warning] pypdf not installed, skipping PDF: {file_path.name}[/yellow]"
+                    )
                     failed_sources.add(file_key)
                     continue
             elif ext in SQLITE_EXTENSIONS:
@@ -415,7 +434,9 @@ def initialize_knowledge_base(
                         f"{file_key}\0{chunk_number}\0{chunk_text}".encode("utf-8")
                     ).hexdigest()
                     metadata["chunk_id"] = chunk_id
-                    file_docs.append(Document(page_content=chunk_text, metadata=metadata))
+                    file_docs.append(
+                        Document(page_content=chunk_text, metadata=metadata)
+                    )
                     chunk_number += 1
 
             if file_docs:
@@ -428,23 +449,32 @@ def initialize_knowledge_base(
                     continue
                 all_parsed_docs.extend(file_docs)
                 updated_state[file_key] = source_fingerprint
-                if file_key not in index_state or index_state[file_key] != source_fingerprint:
+                if (
+                    file_key not in index_state
+                    or index_state[file_key] != source_fingerprint
+                ):
                     changed_docs.extend(file_docs)
         except Exception as e:
             failed_sources.add(str(file_path))
-            console.print(f"[yellow][Warning] Failed parsing {file_path.name}: {e}[/yellow]")
+            console.print(
+                f"[yellow][Warning] Failed parsing {file_path.name}: {e}[/yellow]"
+            )
 
     state_write_started = False
     try:
         if db_exists:
-            vectorstore = Chroma(persist_directory=chroma_persist_dir, embedding_function=embeddings)
+            vectorstore = Chroma(
+                persist_directory=chroma_persist_dir, embedding_function=embeddings
+            )
             changed_sources = {doc.metadata["source"] for doc in changed_docs}
             old_ids_by_source = {}
             for source in changed_sources:
                 previous = vectorstore.get(where={"source": source})
                 old_ids_by_source[source] = set(previous.get("ids", []))
             if changed_docs:
-                console.print(f"[green][Incremental Indexing][/green] Embedding {len(changed_docs)} new or modified chunk(s)...")
+                console.print(
+                    f"[green][Incremental Indexing][/green] Embedding {len(changed_docs)} new or modified chunk(s)..."
+                )
                 vectorstore.add_documents(
                     changed_docs,
                     ids=[doc.metadata["chunk_id"] for doc in changed_docs],
@@ -459,13 +489,17 @@ def initialize_knowledge_base(
                     if obsolete_ids:
                         vectorstore.delete(ids=list(obsolete_ids))
             else:
-                console.print("[green][Incremental Indexing][/green] No document changes detected. Skipping re-embedding.")
+                console.print(
+                    "[green][Incremental Indexing][/green] No document changes detected. Skipping re-embedding."
+                )
             removed_sources = set(index_state) - set(updated_state) - failed_sources
             for source in removed_sources:
                 vectorstore.delete(where={"source": source})
         else:
             if all_parsed_docs:
-                console.print(f"[green][Initial Indexing][/green] Creating vector store with {len(all_parsed_docs)} chunk(s)...")
+                console.print(
+                    f"[green][Initial Indexing][/green] Creating vector store with {len(all_parsed_docs)} chunk(s)..."
+                )
                 vectorstore = Chroma.from_documents(
                     all_parsed_docs,
                     embeddings,
@@ -473,14 +507,16 @@ def initialize_knowledge_base(
                     ids=[doc.metadata["chunk_id"] for doc in all_parsed_docs],
                 )
             else:
-                vectorstore = Chroma(persist_directory=chroma_persist_dir, embedding_function=embeddings)
+                vectorstore = Chroma(
+                    persist_directory=chroma_persist_dir, embedding_function=embeddings
+                )
 
         for source in failed_sources:
             if source in index_state:
                 updated_state[source] = index_state[source]
         state_write_started = True
         _write_index_state_atomic(state_file_path, updated_state)
-        
+
         # Return Hybrid RAG retriever wrapper
         return HybridRAGRetriever(vectorstore, all_parsed_docs)
     except Exception as e:
@@ -503,9 +539,7 @@ def initialize_knowledge_base(
                             all_parsed_docs,
                             embeddings,
                             persist_directory=chroma_persist_dir,
-                            ids=[
-                                doc.metadata["chunk_id"] for doc in all_parsed_docs
-                            ],
+                            ids=[doc.metadata["chunk_id"] for doc in all_parsed_docs],
                         )
                     else:
                         vectorstore = Chroma(

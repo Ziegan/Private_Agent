@@ -101,10 +101,9 @@ def _isolated_command(
     runtime_prefix = Path(sys.prefix).resolve()
     interpreter_base = Path(sys.base_prefix).resolve()
     interpreter_path = Path(sys.executable).resolve()
-    interpreter_in_base = (
-        interpreter_base != Path("/usr")
-        and interpreter_path.is_relative_to(interpreter_base)
-    )
+    interpreter_in_base = interpreter_base != Path(
+        "/usr"
+    ) and interpreter_path.is_relative_to(interpreter_base)
     dependency_paths = []
     for path in sys.path:
         if not path:
@@ -130,21 +129,20 @@ def _isolated_command(
             relative_interpreter = interpreter_path.relative_to(interpreter_base)
             argument = str(Path("/opt/private-agent-python") / relative_interpreter)
         elif argument == root_prefix or argument.startswith(root_prefix + os.sep):
-            argument = "/workspace" + argument[len(root_prefix):]
-        elif (
-            runtime_prefix != Path("/usr")
-            and (
-                argument == str(runtime_prefix)
-                or argument.startswith(str(runtime_prefix) + os.sep)
-            )
+            argument = "/workspace" + argument[len(root_prefix) :]
+        elif runtime_prefix != Path("/usr") and (
+            argument == str(runtime_prefix)
+            or argument.startswith(str(runtime_prefix) + os.sep)
         ):
-            argument = "/opt/private-agent-runtime" + argument[len(str(runtime_prefix)):]
+            argument = (
+                "/opt/private-agent-runtime" + argument[len(str(runtime_prefix)) :]
+            )
         else:
             for dependency_path, sandbox_path in dependency_mounts.items():
                 if argument == str(dependency_path) or argument.startswith(
                     str(dependency_path) + os.sep
                 ):
-                    argument = str(sandbox_path) + argument[len(str(dependency_path)):]
+                    argument = str(sandbox_path) + argument[len(str(dependency_path)) :]
                     break
         rewritten_command.append(argument)
 
@@ -153,12 +151,22 @@ def _isolated_command(
         "--unshare-all",
         "--die-with-parent",
         "--new-session",
-        "--cap-drop", "ALL",
-        "--ro-bind", "/usr", "/usr",
-        "--symlink", "usr/bin", "/bin",
-        "--symlink", "usr/lib", "/lib",
-        "--symlink", "usr/lib64", "/lib64",
-        "--dir", "/etc",
+        "--cap-drop",
+        "ALL",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib64",
+        "/lib64",
+        "--dir",
+        "/etc",
     ]
     if allow_network:
         args.append("--share-net")
@@ -175,50 +183,87 @@ def _isolated_command(
         if os.path.isfile(system_file):
             args.extend(["--ro-bind", system_file, system_file])
     if os.path.isdir("/etc/ssl/certs"):
-        args.extend(["--dir", "/etc/ssl", "--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs"])
-    args.extend([
-        "--dev", "/dev",
-        "--proc", "/proc",
-        "--tmpfs", "/tmp",
-        "--tmpfs", "/home",
-        "--tmpfs", "/root",
-        "--tmpfs", "/run",
-        "--tmpfs", "/mnt",
-        "--tmpfs", "/media",
-        "--tmpfs", "/var",
-        "--tmpfs", "/opt",
-    ])
+        args.extend(
+            ["--dir", "/etc/ssl", "--ro-bind", "/etc/ssl/certs", "/etc/ssl/certs"]
+        )
+    args.extend(
+        [
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--tmpfs",
+            "/tmp",
+            "--tmpfs",
+            "/home",
+            "--tmpfs",
+            "/root",
+            "--tmpfs",
+            "/run",
+            "--tmpfs",
+            "/mnt",
+            "--tmpfs",
+            "/media",
+            "--tmpfs",
+            "/var",
+            "--tmpfs",
+            "/opt",
+        ]
+    )
     if runtime_prefix != Path("/usr"):
-        args.extend([
-            "--dir", "/opt/private-agent-runtime",
-            "--ro-bind", str(runtime_prefix), "/opt/private-agent-runtime",
-        ])
+        args.extend(
+            [
+                "--dir",
+                "/opt/private-agent-runtime",
+                "--ro-bind",
+                str(runtime_prefix),
+                "/opt/private-agent-runtime",
+            ]
+        )
     if interpreter_in_base:
-        args.extend([
-            "--dir", "/opt/private-agent-python",
-            "--ro-bind", str(interpreter_base), "/opt/private-agent-python",
-        ])
+        args.extend(
+            [
+                "--dir",
+                "/opt/private-agent-python",
+                "--ro-bind",
+                str(interpreter_base),
+                "/opt/private-agent-python",
+            ]
+        )
     if dependency_mounts:
         args.extend(["--dir", "/opt/private-agent-dependencies"])
         for source, destination in dependency_mounts.items():
-            args.extend([
-                "--dir", str(destination),
-                "--ro-bind", str(source), str(destination),
-            ])
-    args.extend([
-        "--dir", "/workspace",
-        "--bind", str(root), "/workspace",
-        "--chdir", "/workspace",
-    ])
-    args.extend([
-        prlimit,
-        "--cpu=180",
-        "--as=2147483648",
-        "--nproc=128",
-        "--fsize=536870912",
-        "--",
-        *rewritten_command,
-    ])
+            args.extend(
+                [
+                    "--dir",
+                    str(destination),
+                    "--ro-bind",
+                    str(source),
+                    str(destination),
+                ]
+            )
+    args.extend(
+        [
+            "--dir",
+            "/workspace",
+            "--bind",
+            str(root),
+            "/workspace",
+            "--chdir",
+            "/workspace",
+        ]
+    )
+    args.extend(
+        [
+            prlimit,
+            "--cpu=180",
+            "--as=2147483648",
+            "--nproc=128",
+            "--fsize=536870912",
+            "--",
+            *rewritten_command,
+        ]
+    )
     environment = {
         "PATH": "/usr/local/bin:/usr/bin:/bin",
         "HOME": "/tmp",
@@ -258,10 +303,15 @@ def _ask_without_git(reason: str) -> bool:
         )
         return False
     console.print(f"[yellow]Git checkpointing is unavailable: {reason}[/yellow]")
-    return console.input(
-        "[yellow]Proceed with this isolated code task without Git initialization "
-        "and checkpoint commits? \\[y/N]: [/yellow]"
-    ).strip().lower() == "y"
+    return (
+        console.input(
+            "[yellow]Proceed with this isolated code task without Git initialization "
+            "and checkpoint commits? \\[y/N]: [/yellow]"
+        )
+        .strip()
+        .lower()
+        == "y"
+    )
 
 
 def _slug(text: str) -> str:
@@ -271,13 +321,30 @@ def _slug(text: str) -> str:
 
 def _copy_ignore(directory: str, names: list[str]) -> set[str]:
     ignored = {
-        ".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache",
-        ".mypy_cache", ".ruff_cache", ".cache", ".tox", ".nox", ".next",
-        "coverage", "dist", "build", "target", ".idea", ".vscode",
-        ".private_agent.conf", "secrets",
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".cache",
+        ".tox",
+        ".nox",
+        ".next",
+        "coverage",
+        "dist",
+        "build",
+        "target",
+        ".idea",
+        ".vscode",
+        ".private_agent.conf",
+        "secrets",
     }
     return {
-        name for name in names
+        name
+        for name in names
         if name in ignored
         or (Path(directory) / name).is_symlink()
         or (
@@ -364,7 +431,9 @@ class RunTestsInput(BaseModel):
 
 
 class CheckpointInput(BaseModel):
-    label: str = Field(..., description="Short completed microtask/subtask checkpoint label.")
+    label: str = Field(
+        ..., description="Short completed microtask/subtask checkpoint label."
+    )
     paths: list[str] = Field(
         ...,
         description="Exact changed project-relative files to include, such as ['src/main.py', 'tests/test_main.py'].",

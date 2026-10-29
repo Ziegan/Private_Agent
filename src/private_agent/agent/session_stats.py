@@ -32,11 +32,17 @@ def response_usage(response: Any) -> Tuple[Optional[int], Optional[int]]:
         alt = alt if isinstance(alt, dict) else {}
         if input_tokens is None:
             input_tokens = _int_or_none(
-                alt.get("prompt_tokens", alt.get("input_tokens", metadata.get("prompt_eval_count")))
+                alt.get(
+                    "prompt_tokens",
+                    alt.get("input_tokens", metadata.get("prompt_eval_count")),
+                )
             )
         if output_tokens is None:
             output_tokens = _int_or_none(
-                alt.get("completion_tokens", alt.get("output_tokens", metadata.get("eval_count")))
+                alt.get(
+                    "completion_tokens",
+                    alt.get("output_tokens", metadata.get("eval_count")),
+                )
             )
     return input_tokens, output_tokens
 
@@ -102,7 +108,9 @@ def format_duration(seconds: float) -> str:
 
 def build_stats_table(stats: SessionStats, info: Dict[str, Any]) -> Table:
     """Build the statistics table; `info` holds descriptive session fields."""
-    table = Table(title="Session Statistics", show_header=True, header_style="bold cyan")
+    table = Table(
+        title="Session Statistics", show_header=True, header_style="bold cyan"
+    )
     table.add_column("Metric", style="cyan", no_wrap=True)
     table.add_column("Value", overflow="fold")
 
@@ -125,9 +133,15 @@ def build_stats_table(stats: SessionStats, info: Dict[str, Any]) -> Table:
             "(provider did not report usage)",
         )
     tool_detail = ", ".join(f"{n} x{c}" for n, c in stats.tools.most_common())
-    add("Tool uses", f"{stats.tool_calls}" + (f" ({tool_detail})" if tool_detail else ""))
+    add(
+        "Tool uses",
+        f"{stats.tool_calls}" + (f" ({tool_detail})" if tool_detail else ""),
+    )
     if stats.models:
-        add("Models used", ", ".join(f"{n} ({c} calls)" for n, c in stats.models.items()))
+        add(
+            "Models used",
+            ", ".join(f"{n} ({c} calls)" for n, c in stats.models.items()),
+        )
     add("Summary tokens generated", f"{stats.summary_tokens:,}")
     add("Summary generation time", format_duration(stats.summary_seconds))
     add("Summary stored in SQLite", "yes" if stats.summary_saved else "no")

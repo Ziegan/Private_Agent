@@ -24,7 +24,9 @@ class HybridRAGRetriever:
             from rank_bm25 import BM25Okapi
 
             if documents:
-                tokenized_corpus = [doc.page_content.lower().split() for doc in documents]
+                tokenized_corpus = [
+                    doc.page_content.lower().split() for doc in documents
+                ]
                 self.bm25 = BM25Okapi(tokenized_corpus)
         except ImportError:
             console.print(
@@ -46,9 +48,7 @@ class HybridRAGRetriever:
             key=lambda item: (-item[1], item[0]),
         )
         bm25_results = [
-            self.documents[index]
-            for index, score in top_scored_docs
-            if score > 0
+            self.documents[index] for index, score in top_scored_docs if score > 0
         ]
 
         seen = set()

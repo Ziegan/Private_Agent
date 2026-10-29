@@ -20,9 +20,7 @@ def generated_requirements() -> str:
     dependencies = metadata["project"]["dependencies"]
     return (
         "# Generated from [project].dependencies in pyproject.toml "
-        "by scripts/sync_requirements.py.\n"
-        + "\n".join(dependencies)
-        + "\n"
+        "by scripts/sync_requirements.py.\n" + "\n".join(dependencies) + "\n"
     )
 
 

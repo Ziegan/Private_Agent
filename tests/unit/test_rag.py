@@ -15,12 +15,14 @@ from private_agent.agent import (
     _token_count,
     format_retrieved_citations,
 )
+
 try:
     from private_agent.agent import get_robust_chat_model
 except ImportError:
     # Fallback definition if not explicitly exposed in private_agent.agent
     def get_robust_chat_model(primary_model_name, fallback_model_name, tools=None):
         from langchain_ollama import ChatOllama
+
         try:
             model = ChatOllama(model=primary_model_name)
             if tools:
@@ -31,6 +33,7 @@ except ImportError:
             if tools:
                 model = model.bind_tools(tools)
             return model
+
 
 from private_agent.rag import (
     initialize_knowledge_base,
@@ -44,6 +47,7 @@ from private_agent.rag.indexing import (
 )
 
 console = Console()
+
 
 def test_context_budget_preserves_newest_messages():
     history = [
@@ -135,12 +139,15 @@ def test_retrieved_source_citations_are_independent_of_model_response():
         "/docs/readme.md (chunk 0)",
     ]
 
+
 def test_rag_chunker_splits_long_documents_with_overlap():
     chunks = _split_into_chunks(
-        "x" * 2500, ChunkingSettings(strategy="fixed", chunk_size=1200, chunk_overlap=200)
+        "x" * 2500,
+        ChunkingSettings(strategy="fixed", chunk_size=1200, chunk_overlap=200),
     )
     assert len(chunks) == 3
     assert all(chunks)
+
 
 def test_reset_knowledge_base_removes_only_configured_index(tmp_path):
     from private_agent.rag import reset_knowledge_base
@@ -155,6 +162,7 @@ def test_reset_knowledge_base_removes_only_configured_index(tmp_path):
     assert not index.exists()
     assert sibling.read_text(encoding="utf-8") == "keep"
 
+
 def test_reset_knowledge_base_refuses_symlinks_and_protected_paths(tmp_path):
     from private_agent.rag import reset_knowledge_base
 
@@ -167,6 +175,7 @@ def test_reset_knowledge_base_refuses_symlinks_and_protected_paths(tmp_path):
     with pytest.raises(ValueError, match="protected"):
         reset_knowledge_base(str(pathlib.Path.cwd()))
     assert target.is_dir()
+
 
 def test_local_data_reset_requires_typed_confirmation(monkeypatch, tmp_path):
     import private_agent.agent.runtime as agent
@@ -189,6 +198,7 @@ def test_local_data_reset_requires_typed_confirmation(monkeypatch, tmp_path):
     ]
     memory.close()
 
+
 def test_local_data_reset_clears_both_stores_after_confirmation(monkeypatch, tmp_path):
     import private_agent.agent.runtime as agent
 
@@ -208,18 +218,22 @@ def test_local_data_reset_clears_both_stores_after_confirmation(monkeypatch, tmp
     assert memory.get_all_episodic_summaries(session_id="session") == []
     memory.close()
 
+
 @patch("private_agent.rag.indexing.OllamaEmbeddings")
 @patch("private_agent.rag.indexing.Chroma")
 def test_rag_initialization_mocked(mock_chroma_class, mock_embeddings_class, tmp_path):
     doc_dir = tmp_path / "docs"
     doc_dir.mkdir()
-    (doc_dir / "notes.txt").write_text("Private agent vector search test content.", encoding="utf-8")
+    (doc_dir / "notes.txt").write_text(
+        "Private agent vector search test content.", encoding="utf-8"
+    )
 
     mock_vectorstore = MagicMock()
     mock_chroma_class.from_documents.return_value = mock_vectorstore
 
     vs = initialize_knowledge_base(str(doc_dir))
     assert vs is not None
+
 
 def test_rag_initialization_with_invalid_or_empty_paths():
     """Ensure initialize_knowledge_base returns None immediately for empty, None, or invalid paths."""
@@ -228,10 +242,15 @@ def test_rag_initialization_with_invalid_or_empty_paths():
     assert initialize_knowledge_base("  ") is None
     assert initialize_knowledge_base("/nonexistent/directory/path/12345") is None
 
-@patch("private_agent.rag.indexing.OllamaEmbeddings", side_effect=Exception("Connection refused"))
+
+@patch(
+    "private_agent.rag.indexing.OllamaEmbeddings",
+    side_effect=Exception("Connection refused"),
+)
 def test_rag_embedding_failure_fallback(mock_embeddings_class):
     vs = initialize_knowledge_base("/dummy/path")
     assert vs is None
+
 
 def test_rag_corrupt_index_state_fails_closed_before_embedding(tmp_path):
     docs = tmp_path / "docs"
@@ -245,6 +264,7 @@ def test_rag_corrupt_index_state_fails_closed_before_embedding(tmp_path):
     embeddings.assert_not_called()
     assert state_path.read_text(encoding="utf-8") == "{broken"
 
+
 def test_rag_guided_recovery_preserves_corrupt_index(tmp_path, monkeypatch):
     docs = tmp_path / "docs"
     docs.mkdir()
@@ -253,11 +273,14 @@ def test_rag_guided_recovery_preserves_corrupt_index(tmp_path, monkeypatch):
     index.mkdir()
     (index / ".index_state.json").write_text("{bad", encoding="utf-8")
     (index / "chroma.sqlite3").write_text("preserve", encoding="utf-8")
-    monkeypatch.setattr("private_agent.rag.indexing.OllamaEmbeddings", lambda **kwargs: object())
+    monkeypatch.setattr(
+        "private_agent.rag.indexing.OllamaEmbeddings", lambda **kwargs: object()
+    )
     vectorstore = MagicMock()
     monkeypatch.setattr("private_agent.rag.indexing.Chroma", MagicMock())
     monkeypatch.setattr(
-        "private_agent.rag.indexing.Chroma.from_documents", MagicMock(return_value=vectorstore)
+        "private_agent.rag.indexing.Chroma.from_documents",
+        MagicMock(return_value=vectorstore),
     )
 
     retriever = initialize_knowledge_base(
@@ -271,6 +294,7 @@ def test_rag_guided_recovery_preserves_corrupt_index(tmp_path, monkeypatch):
     assert (backups[0] / "chroma.sqlite3").read_text(encoding="utf-8") == "preserve"
     assert _read_index_state(index / ".index_state.json")
 
+
 def test_rag_limits_file_size_and_keeps_state_write_atomic(tmp_path, monkeypatch):
     docs = tmp_path / "docs"
     docs.mkdir()
@@ -282,7 +306,9 @@ def test_rag_limits_file_size_and_keeps_state_write_atomic(tmp_path, monkeypatch
         def __init__(self, **kwargs):
             pass
 
-    monkeypatch.setattr("private_agent.rag.indexing.OllamaEmbeddings", lambda **kwargs: object())
+    monkeypatch.setattr(
+        "private_agent.rag.indexing.OllamaEmbeddings", lambda **kwargs: object()
+    )
     monkeypatch.setattr("private_agent.rag.indexing.Chroma", EmptyVectorStore)
     retriever = initialize_knowledge_base(str(docs), index_path=str(index))
     assert retriever is not None
@@ -291,12 +317,15 @@ def test_rag_limits_file_size_and_keeps_state_write_atomic(tmp_path, monkeypatch
     state_path = index / ".index_state.json"
     original_state = '{"unchanged": {"mtime_ns": 1, "size": 1}}'
     state_path.write_text(original_state, encoding="utf-8")
-    with patch("private_agent.rag.indexing.os.replace", side_effect=OSError("disk error")):
+    with patch(
+        "private_agent.rag.indexing.os.replace", side_effect=OSError("disk error")
+    ):
         with pytest.raises(OSError, match="disk error"):
             _write_index_state_atomic(state_path, {"new": {"mtime_ns": 2, "size": 2}})
     assert state_path.read_text(encoding="utf-8") == original_state
     assert list(index.glob("*.tmp")) == []
     assert list(index.glob(".*.tmp")) == []
+
 
 def test_rag_vector_failure_does_not_advance_index_state(tmp_path, monkeypatch):
     docs = tmp_path / "docs"
@@ -307,9 +336,7 @@ def test_rag_vector_failure_does_not_advance_index_state(tmp_path, monkeypatch):
     index.mkdir()
     (index / "chroma.sqlite3").touch()
     state_path = index / ".index_state.json"
-    old_state = {
-        str(source.resolve()): {"mtime_ns": 1, "size": 1}
-    }
+    old_state = {str(source.resolve()): {"mtime_ns": 1, "size": 1}}
     state_path.write_text(json.dumps(old_state), encoding="utf-8")
 
     class FailingVectorStore:
@@ -322,7 +349,9 @@ def test_rag_vector_failure_does_not_advance_index_state(tmp_path, monkeypatch):
         def add_documents(self, documents, ids):
             raise RuntimeError("embedding write failed")
 
-    monkeypatch.setattr("private_agent.rag.indexing.OllamaEmbeddings", lambda **kwargs: object())
+    monkeypatch.setattr(
+        "private_agent.rag.indexing.OllamaEmbeddings", lambda **kwargs: object()
+    )
     monkeypatch.setattr("private_agent.rag.indexing.Chroma", FailingVectorStore)
     assert initialize_knowledge_base(str(docs), index_path=str(index)) is None
     assert _read_index_state(state_path) == old_state
@@ -448,7 +477,9 @@ def test_rag_corrupt_vector_database_can_be_explicitly_preserved_and_rebuilt(
     assert retriever is not None
     assert chroma_calls == ["open", "rebuild"]
     assert len(backups) == 1
-    assert (backups[0] / "chroma.sqlite3").read_text(encoding="utf-8") == "corrupt bytes"
+    assert (backups[0] / "chroma.sqlite3").read_text(
+        encoding="utf-8"
+    ) == "corrupt bytes"
     recorded = _read_index_state(index / ".index_state.json")
     for fingerprint in recorded.values():
         assert fingerprint.pop("chunking")
@@ -518,7 +549,9 @@ def test_rag_partial_vector_update_requires_confirmation_then_rebuilds(
     backups = list(tmp_path.glob("index.backup-*"))
     assert confirmed is not None
     assert len(backups) == 1
-    assert (backups[0] / "chroma.sqlite3").read_text(encoding="utf-8") == "previous state"
+    assert (backups[0] / "chroma.sqlite3").read_text(
+        encoding="utf-8"
+    ) == "previous state"
     assert (backups[0] / "partial-update").exists()
     assert not (index / "partial-update").exists()
     assert set(_read_index_state(state_path)) == {str(source.resolve())}
@@ -541,13 +574,14 @@ def test_rag_enforces_corpus_byte_limit(tmp_path, monkeypatch):
             cls.sources = {doc.metadata["source"] for doc in documents}
             return cls()
 
-    monkeypatch.setattr("private_agent.rag.indexing.OllamaEmbeddings", lambda **kwargs: object())
+    monkeypatch.setattr(
+        "private_agent.rag.indexing.OllamaEmbeddings", lambda **kwargs: object()
+    )
     monkeypatch.setattr("private_agent.rag.indexing.Chroma", RecordingVectorStore)
     assert initialize_knowledge_base(str(docs), index_path=str(index)) is not None
     assert RecordingVectorStore.sources == {str(first.resolve())}
-    assert set(_read_index_state(index / ".index_state.json")) == {
-        str(first.resolve())
-    }
+    assert set(_read_index_state(index / ".index_state.json")) == {str(first.resolve())}
+
 
 def test_rag_enforces_pdf_page_and_document_chunk_limits(tmp_path, monkeypatch):
     docs = tmp_path / "docs"
@@ -572,10 +606,13 @@ def test_rag_enforces_pdf_page_and_document_chunk_limits(tmp_path, monkeypatch):
         def get(self, where):
             return {"ids": []}
 
-    monkeypatch.setattr("private_agent.rag.indexing.OllamaEmbeddings", lambda **kwargs: object())
+    monkeypatch.setattr(
+        "private_agent.rag.indexing.OllamaEmbeddings", lambda **kwargs: object()
+    )
     monkeypatch.setattr("private_agent.rag.indexing.Chroma", EmptyVectorStore)
     assert initialize_knowledge_base(str(docs), index_path=str(index)) is not None
     assert _read_index_state(index / ".index_state.json") == {}
+
 
 def test_hybrid_rag_selects_top_bm25_candidates_without_full_sort():
     class FakeBM25:
@@ -631,9 +668,10 @@ def test_rag_follows_symlinks_and_indexes_hardlinks_once(tmp_path, monkeypatch):
     os.link(docs / "real.txt", docs / "hard.txt")
     captured = _capture_indexing(monkeypatch)
 
-    assert initialize_knowledge_base(
-        str(docs), index_path=str(tmp_path / "index")
-    ) is not None
+    assert (
+        initialize_knowledge_base(str(docs), index_path=str(tmp_path / "index"))
+        is not None
+    )
 
     texts = sorted(doc.page_content for doc in captured)
     assert texts == [
@@ -657,9 +695,10 @@ def test_rag_indexes_sqlite_databases_read_only(tmp_path, monkeypatch):
     (docs / "fake.db").write_text("not a database", encoding="utf-8")
     captured = _capture_indexing(monkeypatch)
 
-    assert initialize_knowledge_base(
-        str(docs), index_path=str(tmp_path / "index")
-    ) is not None
+    assert (
+        initialize_knowledge_base(str(docs), index_path=str(tmp_path / "index"))
+        is not None
+    )
 
     assert len(captured) == 1
     content = captured[0].page_content

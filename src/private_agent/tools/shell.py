@@ -42,11 +42,15 @@ def run_shell_command(command: str) -> str:
             + f"workspace-only writes, and resource limits.{risk_notice}[/yellow]"
         )
         if not _tool_invocation_approved.get():
-            approval = console.input(
-                f"[yellow]Approve command "
-                f"{' '.join(shlex.quote(arg) for arg in command_args)}? "
-                "\\[y/N]: [/yellow]"
-            ).strip().lower()
+            approval = (
+                console.input(
+                    f"[yellow]Approve command "
+                    f"{' '.join(shlex.quote(arg) for arg in command_args)}? "
+                    "\\[y/N]: [/yellow]"
+                )
+                .strip()
+                .lower()
+            )
             if approval != "y":
                 return "Error: Command execution was not approved; no command was run."
         if code_tasks.ACTIVE_CODE_TASK is not None and command_args[0] == "git":
@@ -72,7 +76,9 @@ def run_shell_command(command: str) -> str:
             timeout=SHELL_COMMAND_TIMEOUT,
             env=environment,
         )
-        return f"Exit Code: {result.returncode}\nOutput:\n{result.stdout}{result.stderr}"
+        return (
+            f"Exit Code: {result.returncode}\nOutput:\n{result.stdout}{result.stderr}"
+        )
     except RuntimeError as exc:
         return f"Execution blocked: {exc}"
     except Exception as exc:

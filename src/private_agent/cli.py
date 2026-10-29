@@ -34,7 +34,9 @@ def main():
         startup_started = time.monotonic()
         log_path = start_debug_logging()
         if DEBUG_LOG_ENABLED and log_path is None:
-            console.print("[yellow][Debug log] Logging is enabled but no file was created.[/yellow]")
+            console.print(
+                "[yellow][Debug log] Logging is enabled but no file was created.[/yellow]"
+            )
         elif log_path is not None:
             console.print(f"[cyan][Debug log][/cyan] Writing run trace to {log_path}")
         from .agent import run_agent_cli
@@ -78,6 +80,7 @@ def main():
         console.print("[cyan][Info] Goodbye.[/cyan]")
     if exit_code:
         raise SystemExit(exit_code)
+
 
 if __name__ == "__main__":
     main()

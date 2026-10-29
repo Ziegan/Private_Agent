@@ -5,12 +5,14 @@ from private_agent.tools import (
     _PublicOnlySyncHTTPTransport,
     _PublicOnlyAsyncHTTPTransport,
 )
+
 try:
     from private_agent.agent import get_robust_chat_model
 except ImportError:
     # Fallback definition if not explicitly exposed in private_agent.agent
     def get_robust_chat_model(primary_model_name, fallback_model_name, tools=None):
         from langchain_ollama import ChatOllama
+
         try:
             model = ChatOllama(model=primary_model_name)
             if tools:
@@ -21,6 +23,7 @@ except ImportError:
             if tools:
                 model = model.bind_tools(tools)
             return model
+
 
 from private_agent.rag import (
     initialize_knowledge_base,
@@ -34,6 +37,7 @@ from private_agent.hardware import (
 
 console = Console()
 
+
 def test_hardware_acceleration_policy_options():
     assert normalize_acceleration_mode("auto") == "auto"
     assert normalize_acceleration_mode("CPU") == "cpu"
@@ -43,6 +47,7 @@ def test_hardware_acceleration_policy_options():
     assert ollama_acceleration_options("accelerator") == {}
     assert ollama_acceleration_options("cpu") == {"num_gpu": 0}
 
+
 def test_local_chat_model_applies_configured_acceleration_mode():
     from private_agent.agent import runtime as agent
 
@@ -51,9 +56,10 @@ def test_local_chat_model_applies_configured_acceleration_mode():
         ("accelerator", {}),
         ("cpu", {"num_gpu": 0}),
     ):
-        with patch("private_agent.agent.runtime.HARDWARE_ACCELERATION_MODE", mode), patch(
-            "private_agent.agent.runtime.ChatOllama"
-        ) as chat_model:
+        with (
+            patch("private_agent.agent.runtime.HARDWARE_ACCELERATION_MODE", mode),
+            patch("private_agent.agent.runtime.ChatOllama") as chat_model,
+        ):
             agent._make_chat_model(
                 "test-model",
                 thinking_enabled=False,
@@ -72,9 +78,10 @@ def test_local_chat_model_applies_configured_acceleration_mode():
             _PublicOnlyAsyncHTTPTransport
         )
 
-    with patch("private_agent.agent.runtime.HARDWARE_ACCELERATION_MODE", "auto"), patch(
-        "private_agent.agent.runtime.ChatOllama"
-    ) as chat_model:
+    with (
+        patch("private_agent.agent.runtime.HARDWARE_ACCELERATION_MODE", "auto"),
+        patch("private_agent.agent.runtime.ChatOllama") as chat_model,
+    ):
         agent._make_chat_model(
             "test-model",
             thinking_enabled=False,
@@ -83,6 +90,7 @@ def test_local_chat_model_applies_configured_acceleration_mode():
         )
     assert chat_model.call_args.kwargs["reasoning"] is False
     assert "think" not in chat_model.call_args.kwargs
+
 
 def test_hardware_status_reports_ollama_vram_and_server_host():
     class FakeOllama:
@@ -107,6 +115,7 @@ def test_hardware_status_reports_ollama_vram_and_server_host():
     assert "does not identify CUDA, ROCm, Vulkan" in status["detail"]
     assert "5.00 GiB VRAM" in format_hardware_status(status)
 
+
 def test_hardware_status_remote_server_and_cpu_fallback_reporting():
     class FakeOllama:
         def ps(self):
@@ -124,6 +133,7 @@ def test_hardware_status_remote_server_and_cpu_fallback_reporting():
     assert "CPU requested (Ollama num_gpu=0)" in formatted
     assert "no VRAM allocation" in formatted
 
+
 def test_hardware_status_handles_unavailable_ollama_server():
     def unavailable(**kwargs):
         raise ConnectionError("connection refused")
@@ -135,16 +145,16 @@ def test_hardware_status_handles_unavailable_ollama_server():
     assert status["placement"] == "unknown"
     assert "Could not query Ollama runtime status" in status["error"]
 
+
 def test_rag_embeddings_receive_cpu_acceleration_policy(tmp_path, monkeypatch):
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "notes.txt").write_text("Local hardware policy test.", encoding="utf-8")
-    monkeypatch.setattr(
-        "private_agent.rag.indexing.HARDWARE_ACCELERATION_MODE", "cpu"
-    )
-    with patch("private_agent.rag.indexing.OllamaEmbeddings") as embeddings, patch(
-        "private_agent.rag.indexing.Chroma"
-    ) as chroma:
+    monkeypatch.setattr("private_agent.rag.indexing.HARDWARE_ACCELERATION_MODE", "cpu")
+    with (
+        patch("private_agent.rag.indexing.OllamaEmbeddings") as embeddings,
+        patch("private_agent.rag.indexing.Chroma") as chroma,
+    ):
         chroma.from_documents.return_value = MagicMock()
         assert initialize_knowledge_base(str(docs)) is not None
     assert embeddings.call_args.kwargs["num_gpu"] == 0

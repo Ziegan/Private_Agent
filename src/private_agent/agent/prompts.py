@@ -55,9 +55,7 @@ def estimate_context_window(
     system_prompts: list | None = None,
 ) -> dict:
     total_chars = len(current_input)
-    system_text = "\n".join(
-        str(message.content) for message in (system_prompts or [])
-    )
+    system_text = "\n".join(str(message.content) for message in (system_prompts or []))
     total_chars += len(system_text)
     for message in chat_history:
         content = message.content

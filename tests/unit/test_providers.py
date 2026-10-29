@@ -122,9 +122,7 @@ def test_local_runtime_discovery_reports_only_reachable_loopback_runtimes():
                 {"name": "nomic-embed-text"},
             ]
         },
-        "http://127.0.0.1:1234/v1/models": {
-            "data": [{"id": "lmstudio-model"}]
-        },
+        "http://127.0.0.1:1234/v1/models": {"data": [{"id": "lmstudio-model"}]},
         "http://127.0.0.1:8080/v1/models": {"data": [{"id": "gguf-model"}]},
     }
 
@@ -252,11 +250,14 @@ def test_local_runtime_discovery_rejects_non_loopback_urls():
     def no_request(**_kwargs):
         raise AssertionError("Non-loopback endpoints must never be contacted.")
 
-    assert discover_local_runtimes(
-        "https://remote-ollama.example.test",
-        [{"name": "custom", "base_url": "http://192.168.1.10:1234/v1"}],
-        client_factory=no_request,
-    ) == []
+    assert (
+        discover_local_runtimes(
+            "https://remote-ollama.example.test",
+            [{"name": "custom", "base_url": "http://192.168.1.10:1234/v1"}],
+            client_factory=no_request,
+        )
+        == []
+    )
 
 
 def test_windows_discovers_configured_local_runtimes(monkeypatch):

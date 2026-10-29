@@ -176,11 +176,16 @@ def test_task_pause_between_steps_survives_reopen_without_replaying_verified_wor
         task["task_id"], task["revision"], task["digest"], "research: approved"
     )
     memory.update_task_step(
-        task["task_id"], task["revision"], "inspect", "reported_done",
+        task["task_id"],
+        task["revision"],
+        "inspect",
+        "reported_done",
         "Inspected the persisted project state.",
     )
     memory.verify_task_step(
-        task["task_id"], task["revision"], "inspect",
+        task["task_id"],
+        task["revision"],
+        "inspect",
         "Confirmed against the project files.",
     )
     memory.set_task_status(task["task_id"], "paused")
@@ -425,8 +430,7 @@ def test_failed_schema_migration_preserves_existing_database(tmp_path, monkeypat
         "SELECT session_id, role, content FROM chat_history"
     ).fetchone()
     columns = {
-        item[1]
-        for item in connection.execute("PRAGMA table_info(chat_history)")
+        item[1] for item in connection.execute("PRAGMA table_info(chat_history)")
     }
     schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
     connection.close()
@@ -478,10 +482,13 @@ def test_future_schema_version_is_rejected_without_modifying_existing_data(tmp_p
     connection = sqlite3.connect(db_path)
     assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
     assert connection.execute("SELECT value FROM preserved").fetchone() == ("keep",)
-    assert connection.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' "
-        "AND name = 'chat_history'"
-    ).fetchone() is None
+    assert (
+        connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'chat_history'"
+        ).fetchone()
+        is None
+    )
     connection.close()
 
 
@@ -592,10 +599,13 @@ def test_task_lease_and_action_journal_require_exclusive_owner(tmp_path):
     )
     memory.conn.commit()
     assert memory.reconcile_task_actions_after_restart() == 1
-    assert memory.list_task_actions(
-        task["task_id"],
-        unresolved_only=True,
-    )[0]["status"] == "outcome_unknown"
+    assert (
+        memory.list_task_actions(
+            task["task_id"],
+            unresolved_only=True,
+        )[0]["status"]
+        == "outcome_unknown"
+    )
     assert memory.acquire_task_lease(
         task["task_id"],
         "owner-two",
@@ -623,11 +633,14 @@ def test_task_lease_and_action_journal_require_exclusive_owner(tmp_path):
         "read_file",
         {"path": "source.py"},
     )
-    assert memory.finish_task_action(
-        second_action,
-        "outcome_observed",
-        "digest",
-    )["status"] == "outcome_observed"
+    assert (
+        memory.finish_task_action(
+            second_action,
+            "outcome_observed",
+            "digest",
+        )["status"]
+        == "outcome_observed"
+    )
     memory.close()
 
 
@@ -769,10 +782,13 @@ async def test_uncertain_task_action_blocks_retries_until_user_reconciles(
         {"id": "uncertain-call", "name": "web_search", "args": {"query": "secret"}},
     )
     assert "Error executing tool" in first.content
-    assert memory.list_task_actions(
-        task["task_id"],
-        unresolved_only=True,
-    )[0]["status"] == "outcome_unknown"
+    assert (
+        memory.list_task_actions(
+            task["task_id"],
+            unresolved_only=True,
+        )[0]["status"]
+        == "outcome_unknown"
+    )
     memory.update_task_step(
         task["task_id"],
         task["revision"],
@@ -864,10 +880,13 @@ async def test_cancelled_task_tool_is_journaled_unknown_and_blocks_next_action(
             owner_id,
             {"id": "cancelled-call", "name": "web_search", "args": {}},
         )
-    assert memory.list_task_actions(
-        task["task_id"],
-        unresolved_only=True,
-    )[0]["status"] == "outcome_unknown"
+    assert (
+        memory.list_task_actions(
+            task["task_id"],
+            unresolved_only=True,
+        )[0]["status"]
+        == "outcome_unknown"
+    )
     memory.close()
 
     child_env = os.environ.copy()
@@ -896,10 +915,13 @@ async def test_cancelled_task_tool_is_journaled_unknown_and_blocks_next_action(
     assert json.loads(child.stdout) == ["outcome_unknown"]
 
     memory = PersistentMemory(str(tmp_path / "cancelled-action.sqlite"))
-    assert memory.list_task_actions(
-        task["task_id"],
-        unresolved_only=True,
-    )[0]["status"] == "outcome_unknown"
+    assert (
+        memory.list_task_actions(
+            task["task_id"],
+            unresolved_only=True,
+        )[0]["status"]
+        == "outcome_unknown"
+    )
 
     async def should_not_execute(*_args, **_kwargs):
         pytest.fail("a subsequent task action must be blocked")
@@ -1041,9 +1063,7 @@ def test_task_revision_invalidates_approval_and_rejects_stale_progress(temp_db):
     assert revised["validation_revision"] is None
     assert revised["validation_evidence"] is None
     with pytest.raises(ValueError, match="No active approval"):
-        memory.update_task_step(
-            task["task_id"], 2, "docs", "in_progress"
-        )
+        memory.update_task_step(task["task_id"], 2, "docs", "in_progress")
     with pytest.raises(ValueError, match="changed since it was read"):
         memory.revise_task_plan(
             task["task_id"],
@@ -1089,9 +1109,7 @@ def test_structured_plan_metadata_persists_and_enforces_dependencies(temp_db):
         "coding: approved test",
     )
     with pytest.raises(ValueError, match="dependencies must be reported complete"):
-        memory.update_task_step(
-            task["task_id"], 1, "review", "in_progress"
-        )
+        memory.update_task_step(task["task_id"], 1, "review", "in_progress")
 
     memory.update_task_step(
         task["task_id"],
@@ -1123,9 +1141,7 @@ def test_structured_plan_metadata_persists_and_enforces_dependencies(temp_db):
     "steps, message",
     [
         (
-            [
-                {"step_id": "a", "description": "A", "dependencies": ["missing"]}
-            ],
+            [{"step_id": "a", "description": "A", "dependencies": ["missing"]}],
             "unknown dependencies",
         ),
         (
@@ -1314,9 +1330,10 @@ def test_episodic_search_uses_index_when_available_and_lexical_fallback(temp_db)
         "Nebula search engine error handling"
     ]
     if memory._episode_fts_enabled:
-        assert memory.conn.execute(
-            "SELECT COUNT(*) FROM agent_episode_fts"
-        ).fetchone()[0] == 2
+        assert (
+            memory.conn.execute("SELECT COUNT(*) FROM agent_episode_fts").fetchone()[0]
+            == 2
+        )
 
     nebula_id = memory.conn.execute(
         "SELECT id FROM chat_history WHERE content LIKE 'Nebula%'"
@@ -1376,13 +1393,12 @@ def test_episodic_storage_supports_in_memory_database():
     assert episode["content"] == "in-memory legacy summary"
     assert episode["id"]
     assert episode["timestamp"]
-    assert memory.search_relevant_episodic_memories(
-        "in-memory legacy summary"
-    )[0]["id"] == episode["id"]
+    assert (
+        memory.search_relevant_episodic_memories("in-memory legacy summary")[0]["id"]
+        == episode["id"]
+    )
     assert memory.delete_episodic_memory(episode["id"])
-    assert memory.search_relevant_episodic_memories(
-        "in-memory legacy summary"
-    ) == []
+    assert memory.search_relevant_episodic_memories("in-memory legacy summary") == []
     memory.close()
 
 
@@ -1479,9 +1495,7 @@ def test_memory_summaries_are_bounded(temp_db, monkeypatch):
     with pytest.raises(ValueError, match="configured 12-character limit"):
         memory.save_summary("session", "x" * 100)
     memory.save_summary("session", "fits limit")
-    assert memory.get_all_episodic_summaries(session_id="session") == [
-        "fits limit"
-    ]
+    assert memory.get_all_episodic_summaries(session_id="session") == ["fits limit"]
     memory.close()
 
 
@@ -1566,7 +1580,9 @@ def test_skill_files_are_linked_to_sessions_and_counted(temp_db, tmp_path):
     memory = PersistentMemory(db_path=temp_db)
     skill_path = tmp_path / "skills" / "review.md"
     skill_path.parent.mkdir()
-    skill_path.write_text("# Review skill\nInspect, test, and report.", encoding="utf-8")
+    skill_path.write_text(
+        "# Review skill\nInspect, test, and report.", encoding="utf-8"
+    )
 
     entry_id = memory.register_skill_file(
         "origin-session", str(skill_path), "Review a code change"
@@ -1614,12 +1630,12 @@ def test_memory_retention_prunes_by_record_type_and_preserves_resumable_links(
     memory.save_summary("session", "unlinked expired episode")
     memory.save_summary("session", "resumable task episode")
     memory.register_skill_file(
-        "session", str(tmp_path / "preserved.md"), "resumable skill",
+        "session",
+        str(tmp_path / "preserved.md"),
+        "resumable skill",
         source_task_id=resumable["task_id"],
     )
-    memory.register_skill_file(
-        "session", str(tmp_path / "expired.md"), "expired skill"
-    )
+    memory.register_skill_file("session", str(tmp_path / "expired.md"), "expired skill")
     old_timestamp = "2000-01-01 00:00:00"
     memory.conn.execute(
         "UPDATE chat_history SET timestamp = ?",
@@ -1643,12 +1659,10 @@ def test_memory_retention_prunes_by_record_type_and_preserves_resumable_links(
     assert result["skills"] == 1
     assert result["skill_paths"] == [str(tmp_path / "expired.md")]
     assert memory.get_task(resumable["task_id"])["status"] == "stale"
-    assert [
-        item["content"] for item in memory.list_episodic_memories()
-    ] == ["resumable task episode"]
-    assert memory.search_relevant_episodic_memories(
-        "unlinked expired episode"
-    ) == []
+    assert [item["content"] for item in memory.list_episodic_memories()] == [
+        "resumable task episode"
+    ]
+    assert memory.search_relevant_episodic_memories("unlinked expired episode") == []
     assert memory.get_recent_skill_files(5)[0]["description"] == "resumable skill"
     memory.close()
 
@@ -1683,8 +1697,7 @@ def test_sqlite_exhausted_write_lock_surfaces_without_losing_data(temp_db):
         assert memory.load_history("lock_test_session") == []
         memory.save_message("lock_test_session", "human", "retry after lock")
         assert [
-            message.content
-            for message in memory.load_history("lock_test_session")
+            message.content for message in memory.load_history("lock_test_session")
         ] == ["retry after lock"]
     finally:
         blocker.close()
@@ -1698,9 +1711,7 @@ def test_sqlite_history_tools(temp_db):
     read_result = read_chat_history_from_sqlite.invoke({"limit": 5})
     assert "Test message for sqlite tools" in read_result
 
-    delete_result = delete_chat_history_from_sqlite.invoke(
-        {"session_id": "session_a"}
-    )
+    delete_result = delete_chat_history_from_sqlite.invoke({"session_id": "session_a"})
     assert "Success" in delete_result
 
     wipe_result = delete_chat_history_from_sqlite.invoke({})
@@ -1713,9 +1724,7 @@ def test_sqlite_history_search_is_bounded_and_session_scoped(temp_db):
     memory.save_message("session-b", "human", "Juniper is a different session.")
     memory.save_summary("session-a", "Juniper summary for the project.")
 
-    all_results = search_chat_history_in_sqlite.invoke(
-        {"query": "juniper", "limit": 2}
-    )
+    all_results = search_chat_history_in_sqlite.invoke({"query": "juniper", "limit": 2})
     scoped_results = search_chat_history_in_sqlite.invoke(
         {"query": "juniper", "session_id": "session-a", "limit": 10}
     )

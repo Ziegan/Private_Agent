@@ -6,7 +6,12 @@ import json
 from io import StringIO
 from unittest.mock import patch, MagicMock, AsyncMock
 from rich.console import Console
-from langchain_core.messages import AIMessage, AIMessageChunk, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    SystemMessage,
+    ToolMessage,
+)
 
 from private_agent.database import PersistentMemory
 from private_agent.sandbox import SandboxManager
@@ -16,12 +21,14 @@ from private_agent.agent import (
     execute_tool_call,
     run_agent_cli_async,
 )
+
 try:
     from private_agent.agent import get_robust_chat_model
 except ImportError:
     # Fallback definition if not explicitly exposed in private_agent.agent
     def get_robust_chat_model(primary_model_name, fallback_model_name, tools=None):
         from langchain_ollama import ChatOllama
+
         try:
             model = ChatOllama(model=primary_model_name)
             if tools:
@@ -107,9 +114,7 @@ def scripted_local_cli(monkeypatch, tmp_path):
     monkeypatch.setattr(agent, "_make_chat_model", lambda *args, **kwargs: model)
     monkeypatch.setattr(agent, "inspect_ollama_hardware", lambda *args, **kwargs: {})
     monkeypatch.setattr(agent, "format_hardware_status", lambda status: "test")
-    monkeypatch.setattr(
-        agent, "initialize_knowledge_base", lambda path, **kwargs: None
-    )
+    monkeypatch.setattr(agent, "initialize_knowledge_base", lambda path, **kwargs: None)
     monkeypatch.setattr(agent, "load_skills_from_folder", lambda path: {})
     monkeypatch.setattr(agent.console, "input", inputs)
 
@@ -261,9 +266,7 @@ async def test_missing_local_runtimes_keeps_online_provider_available(
     select_online.assert_called_once_with(False)
     assert expected_notice in "\n".join(printed)
     assert any(
-        "Default: 1" in call.args[0]
-        for call in inputs.call_args_list
-        if call.args
+        "Default: 1" in call.args[0] for call in inputs.call_args_list if call.args
     )
     hardware_status.assert_not_called()
 
@@ -393,8 +396,7 @@ async def test_local_openai_compatible_runtime_can_be_selected(
     )
     assert agent._SESSION_INFO["Model provider"] == f"Local ({runtime_name})"
     assert any(
-        f"{runtime_name} does not expose a standardized" in line
-        for line in printed
+        f"{runtime_name} does not expose a standardized" in line for line in printed
     )
     hardware_status.assert_not_called()
 
@@ -552,12 +554,14 @@ async def test_cli_applies_explicit_skill_to_next_request(
     monkeypatch.setattr(
         agent,
         "prompt_user_input",
-        AsyncMock(side_effect=[
-            "/skills",
-            "/skills python_expert",
-            "Explain this Python function",
-            "exit",
-        ]),
+        AsyncMock(
+            side_effect=[
+                "/skills",
+                "/skills python_expert",
+                "Explain this Python function",
+                "exit",
+            ]
+        ),
     )
     captured_output = StringIO()
     captured_console = Console(file=captured_output, no_color=True, width=200)
@@ -580,7 +584,8 @@ async def test_cli_applies_explicit_skill_to_next_request(
 
 @pytest.mark.asyncio
 async def test_cli_plan_mode_persists_plan_using_planner_tools_only(
-    scripted_local_cli, monkeypatch,
+    scripted_local_cli,
+    monkeypatch,
 ):
     agent, model, inputs, _workspace, database_path = scripted_local_cli
     goal = "Research local deployment options"
@@ -674,11 +679,7 @@ async def test_approved_task_is_sent_to_agent_without_repeating_request(
         nonlocal task_menu_calls
         if prompt.startswith("[cyan]Tasks"):
             task_menu_calls += 1
-            return (
-                f"approve {task['task_id']}"
-                if task_menu_calls == 1
-                else "done"
-            )
+            return f"approve {task['task_id']}" if task_menu_calls == 1 else "done"
         if prompt.startswith("Approve exact revision"):
             return f"APPROVE {task['task_id'][:8]}"
         if "Choose permission mode" in prompt:
@@ -882,9 +883,7 @@ async def test_plan_research_decline_offline_or_unavailable_results_are_safe(
                                 "description": "Verify current requirements",
                             }
                         ],
-                        "research_questions": [
-                            "Which requirements are current?"
-                        ],
+                        "research_questions": ["Which requirements are current?"],
                     },
                     "id": "offline-plan-create",
                 }
@@ -953,13 +952,18 @@ def test_sync_connect_backend_falls_back_to_second_validated_address(monkeypatch
     assert backend.connect_tcp("localhost", 11434) == "connected"
     assert attempts == ["::1", "127.0.0.1"]
 
+
 @pytest.mark.asyncio
 async def test_offline_research_can_continue_with_incomplete_data():
     from private_agent.agent import runtime as agent
 
-    with patch("private_agent.agent.runtime.has_internet_connection", return_value=False), \
-         patch("private_agent.agent.runtime.sys.stdin", MagicMock(isatty=lambda: True)), \
-         patch.object(agent.console, "input", return_value="c"):
+    with (
+        patch(
+            "private_agent.agent.runtime.has_internet_connection", return_value=False
+        ),
+        patch("private_agent.agent.runtime.sys.stdin", MagicMock(isatty=lambda: True)),
+        patch.object(agent.console, "input", return_value="c"),
+    ):
         allowed, message = await authorize_network_research(
             "web_search", {"query": "example"}
         )
@@ -1059,7 +1063,10 @@ async def test_manual_mode_keeps_per_request_approval_with_session_consent():
 
     assert state == {"granted": True}
     assert console.input.call_count == 2
-    assert "will send this to an external service" in console.input.call_args_list[0].args[0]
+    assert (
+        "will send this to an external service"
+        in console.input.call_args_list[0].args[0]
+    )
     assert "Approve this 'web_search' action" in console.input.call_args_list[1].args[0]
 
 
@@ -1137,6 +1144,7 @@ def test_permission_mode_policy_matrix(monkeypatch):
     assert agent._tool_needs_permission("run_shell_command", "monitored")
     assert agent._tool_needs_permission("run_project_unit_tests", "monitored")
     assert not agent._tool_needs_permission("edit_local_file", "monitored")
+
 
 @pytest.mark.asyncio
 async def test_tool_result_and_failure_are_returned_to_agent(monkeypatch):
@@ -1240,6 +1248,7 @@ async def test_tool_result_and_failure_are_returned_to_agent(monkeypatch):
     )
     assert "already exists" in collision_panel.renderable.plain
 
+
 @pytest.mark.asyncio
 async def test_model_invocation_streams_and_aggregates_text(monkeypatch):
     import private_agent.agent.runtime as agent
@@ -1325,15 +1334,19 @@ async def test_empty_model_stream_retry_failure_stays_in_current_turn(monkeypatc
 def test_visible_chunk_text_includes_text_blocks():
     import private_agent.agent.runtime as agent
 
-    assert agent._visible_chunk_text(
-        [
-            "Hello",
-            {"type": "text", "text": " world"},
-            {"type": "reasoning", "text": "private thought"},
-            {"text": "untyped internal content"},
-            {"type": "image"},
-        ]
-    ) == "Hello world"
+    assert (
+        agent._visible_chunk_text(
+            [
+                "Hello",
+                {"type": "text", "text": " world"},
+                {"type": "reasoning", "text": "private thought"},
+                {"text": "untyped internal content"},
+                {"type": "image"},
+            ]
+        )
+        == "Hello world"
+    )
+
 
 def test_tool_request_is_visible_and_redacts_secrets(monkeypatch):
     import private_agent.agent.runtime as agent
@@ -1345,13 +1358,15 @@ def test_tool_request_is_visible_and_redacts_secrets(monkeypatch):
         lambda *values, **kwargs: printed.append((values, kwargs)),
     )
 
-    agent._display_tool_request({
-        "name": "web_search",
-        "args": {
-            "query": "public profile",
-            "api_key": "must-not-be-visible",
-        },
-    })
+    agent._display_tool_request(
+        {
+            "name": "web_search",
+            "args": {
+                "query": "public profile",
+                "api_key": "must-not-be-visible",
+            },
+        }
+    )
 
     assert printed[0][0][0] == "[cyan][Tool Request][/cyan]"
     summary = printed[0][0][1].plain
@@ -1359,6 +1374,7 @@ def test_tool_request_is_visible_and_redacts_secrets(monkeypatch):
     assert "public profile" in summary
     assert "[REDACTED]" in summary
     assert "must-not-be-visible" not in summary
+
 
 def test_tool_result_preview_is_bounded_and_labeled(monkeypatch):
     import private_agent.agent.runtime as agent
@@ -1380,6 +1396,7 @@ def test_tool_result_preview_is_bounded_and_labeled(monkeypatch):
     assert panel.title.plain == "Tool output: search_workspace"
     assert panel.renderable.plain.startswith("x" * agent.TOOL_RESULT_PREVIEW_CHARS)
     assert "Preview truncated" in panel.renderable.plain
+
 
 @pytest.mark.asyncio
 async def test_model_invocation_falls_back_to_nonstreaming_models():
@@ -1436,6 +1453,7 @@ async def test_streaming_can_be_disabled_by_configuration(monkeypatch):
     model.ainvoke.assert_awaited_once_with([])
     model.astream.assert_not_awaited()
 
+
 def test_generation_rate_prefers_provider_token_usage(monkeypatch):
     import private_agent.agent.runtime as agent
 
@@ -1457,6 +1475,7 @@ def test_generation_rate_prefers_provider_token_usage(monkeypatch):
     assert "[Generation]" in printed[0][0][0]
     assert "10 model-reported output tokens" in printed[0][0][0]
     assert "5.0 tokens/s" in printed[0][0][0]
+
 
 def test_visible_reasoning_only_shows_explicit_summary_when_enabled(monkeypatch):
     import private_agent.agent.runtime as agent
@@ -1484,6 +1503,7 @@ def test_visible_reasoning_only_shows_explicit_summary_when_enabled(monkeypatch)
     assert panel.title.plain == "Model rationale summary"
     assert panel.renderable.plain == "Compared two available options."
     assert "private chain of thought" not in panel.renderable.plain
+
 
 @pytest.mark.asyncio
 async def test_streaming_response_is_not_rendered_inside_live_status(monkeypatch):
@@ -1525,10 +1545,10 @@ async def test_streaming_response_is_not_rendered_inside_live_status(monkeypatch
     assert response.content == "visible answer"
     assert not status_active
     assert any(
-        values == ("[dim][Processing][/dim] Generating",)
-        for values, _ in printed
+        values == ("[dim][Processing][/dim] Generating",) for values, _ in printed
     )
     assert any(values == ("visible answer",) for values, _ in printed)
+
 
 @pytest.mark.asyncio
 async def test_nonstreaming_response_keeps_live_status(monkeypatch):
@@ -1741,22 +1761,22 @@ async def test_local_agent_turn_persists_history_and_summary(monkeypatch, tmp_pa
             )
         ],
     )
-    monkeypatch.setattr(agent, "inspect_model_capabilities", lambda model: {
-        "tools": False,
-        "function_calls": False,
-        "structured_output": False,
-        "thinking": False,
-        "vision": False,
-        "audio": False,
-    })
+    monkeypatch.setattr(
+        agent,
+        "inspect_model_capabilities",
+        lambda model: {
+            "tools": False,
+            "function_calls": False,
+            "structured_output": False,
+            "thinking": False,
+            "vision": False,
+            "audio": False,
+        },
+    )
     monkeypatch.setattr(agent, "_make_chat_model", lambda *args, **kwargs: mock_model)
-    monkeypatch.setattr(
-        agent, "inspect_ollama_hardware", lambda *args, **kwargs: {}
-    )
+    monkeypatch.setattr(agent, "inspect_ollama_hardware", lambda *args, **kwargs: {})
     monkeypatch.setattr(agent, "format_hardware_status", lambda status: "test")
-    monkeypatch.setattr(
-        agent, "initialize_knowledge_base", lambda path, **kwargs: None
-    )
+    monkeypatch.setattr(agent, "initialize_knowledge_base", lambda path, **kwargs: None)
     monkeypatch.setattr(agent, "load_skills_from_folder", lambda path: {})
     inputs = MagicMock(side_effect=["", "", "", "", "1", "", "hello", "exit"])
     monkeypatch.setattr(agent.console, "input", inputs)
@@ -1795,7 +1815,10 @@ async def test_local_agent_turn_persists_history_and_summary(monkeypatch, tmp_pa
         for message in call.args[0]
         if isinstance(message, SystemMessage)
     )
-    assert sum("Resume latest session" in call.args[0] for call in inputs.call_args_list) == 1
+    assert (
+        sum("Resume latest session" in call.args[0] for call in inputs.call_args_list)
+        == 1
+    )
     memory.close()
     assert mock_model.ainvoke.await_count == 4
 
@@ -1857,8 +1880,7 @@ async def test_runtime_rag_citations_are_prompted_and_shown(
     assert "The offline handbook says the local index is encrypted." in model_input
     assert "[Source: /private/kb/handbook.md, chunk 3]" in model_input
     assert any(
-        "/private/kb/handbook.md (page 7) (chunk 3)" in output
-        for output in printed
+        "/private/kb/handbook.md (page 7) (chunk 3)" in output for output in printed
     )
 
 
@@ -1879,12 +1901,8 @@ async def test_cli_requires_rebuild_confirmation_before_preserving_corrupt_rag_i
     state = index / ".index_state.json"
     state.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(agent, "RAG_INDEX_PATH", str(index))
-    monkeypatch.setattr(
-        agent, "initialize_knowledge_base", initialize_knowledge_base
-    )
-    monkeypatch.setattr(
-        indexing, "OllamaEmbeddings", lambda **kwargs: object()
-    )
+    monkeypatch.setattr(agent, "initialize_knowledge_base", initialize_knowledge_base)
+    monkeypatch.setattr(indexing, "OllamaEmbeddings", lambda **kwargs: object())
     open_attempts = []
     vectorstore = MagicMock()
     vectorstore.similarity_search.return_value = []
@@ -1952,8 +1970,10 @@ async def test_cli_retention_prunes_old_messages_and_summaries_end_to_end(
         memory.conn.execute(
             "UPDATE chat_history SET timestamp = ? WHERE session_id = 'expired'",
             (
-                (datetime.datetime.now(datetime.timezone.utc) -
-                 datetime.timedelta(days=60)).strftime("%Y-%m-%d %H:%M:%S"),
+                (
+                    datetime.datetime.now(datetime.timezone.utc)
+                    - datetime.timedelta(days=60)
+                ).strftime("%Y-%m-%d %H:%M:%S"),
             ),
         )
     memory.close()
@@ -2075,14 +2095,12 @@ async def test_cli_history_search_and_reviewed_entry_deletion_flow(
     search_result = next(
         message
         for message in model.calls[1]
-        if isinstance(message, ToolMessage)
-        and message.tool_call_id == "review-search"
+        if isinstance(message, ToolMessage) and message.tool_call_id == "review-search"
     )
     delete_result = next(
         message
         for message in model.calls[2]
-        if isinstance(message, ToolMessage)
-        and message.tool_call_id == "review-delete"
+        if isinstance(message, ToolMessage) and message.tool_call_id == "review-delete"
     )
     assert f"Entry ID: {entry_id}" in search_result.content
     assert f"Deleted SQLite history entry {entry_id}" in delete_result.content
@@ -2098,7 +2116,9 @@ async def test_runtime_bounds_assembled_long_session_to_model_context(
     _agent, model, inputs, _workspace, database_path = scripted_local_cli
     memory = PersistentMemory(db_path=str(database_path))
     for index in range(30):
-        memory.save_message("long-session", "human", f"older-{index} " + "history " * 150)
+        memory.save_message(
+            "long-session", "human", f"older-{index} " + "history " * 150
+        )
         memory.save_message("long-session", "ai", f"answer-{index} " + "reply " * 150)
     memory.close()
 
@@ -2161,7 +2181,9 @@ async def test_runtime_summarizes_full_context_instead_of_dropping_it(
     _agent, model, inputs, _workspace, database_path = scripted_local_cli
     memory = PersistentMemory(db_path=str(database_path))
     for index in range(30):
-        memory.save_message("long-session", "human", f"older-{index} " + "history " * 150)
+        memory.save_message(
+            "long-session", "human", f"older-{index} " + "history " * 150
+        )
         memory.save_message("long-session", "ai", f"answer-{index} " + "reply " * 150)
     memory.close()
 
@@ -2172,8 +2194,12 @@ async def test_runtime_summarizes_full_context_instead_of_dropping_it(
         agent,
         "inspect_model_capabilities",
         lambda _name: {
-            "tools": True, "function_calls": True, "structured_output": False,
-            "thinking": False, "vision": False, "audio": False,
+            "tools": True,
+            "function_calls": True,
+            "structured_output": False,
+            "thinking": False,
+            "vision": False,
+            "audio": False,
             "context_window": 1800,
         },
     )
@@ -2186,9 +2212,13 @@ async def test_runtime_summarizes_full_context_instead_of_dropping_it(
         AIMessage(content="short summary"),
     ]
     inputs.side_effect = lambda prompt: (
-        "y" if "Resume latest session" in prompt
-        else "1" if "Choose provider" in prompt or "Select model choice" in prompt
-        else "2" if "permission mode" in prompt else ""
+        "y"
+        if "Resume latest session" in prompt
+        else "1"
+        if "Choose provider" in prompt or "Select model choice" in prompt
+        else "2"
+        if "permission mode" in prompt
+        else ""
     )
     await run_agent_cli_async()
 
@@ -2228,9 +2258,7 @@ async def test_cli_executes_tool_and_returns_result_to_model(
     assert "get_local_datetime" in terminal_output
     assert "[Tool Execution]" in terminal_output
     tool_results = [
-        message
-        for message in model.calls[1]
-        if isinstance(message, ToolMessage)
+        message for message in model.calls[1] if isinstance(message, ToolMessage)
     ]
     assert len(tool_results) == 1
     assert tool_results[0].tool_call_id == "datetime-call"
@@ -2344,9 +2372,7 @@ async def test_local_model_switch_preserves_thinking_and_hardware_settings(
             return self
 
     def make_model(model, **kwargs):
-        constructor_calls.append(
-            (model, kwargs, agent.HARDWARE_ACCELERATION_MODE)
-        )
+        constructor_calls.append((model, kwargs, agent.HARDWARE_ACCELERATION_MODE))
         return model_instances.setdefault(model, FakeModel(model))
 
     monkeypatch.setattr(agent, "fetch_local_chat_models", lambda: model_names)
@@ -2474,9 +2500,9 @@ async def test_local_workspace_image_requires_vision_and_explicit_approval(
     monkeypatch.setattr(
         agent,
         "captured_image_message",
-        lambda reference: image_attachment
-        if reference.startswith("workspace-image:")
-        else None,
+        lambda reference: (
+            image_attachment if reference.startswith("workspace-image:") else None
+        ),
     )
     model.responses = [
         AIMessage(
@@ -2497,6 +2523,7 @@ async def test_local_workspace_image_requires_vision_and_explicit_approval(
         "prompt_user_input",
         AsyncMock(side_effect=["Describe @photo.jpg", "exit"]),
     )
+
     def answer_startup_prompt(prompt):
         if "permission mode" in prompt.lower():
             return "2"
@@ -2511,12 +2538,8 @@ async def test_local_workspace_image_requires_vision_and_explicit_approval(
     await run_agent_cli_async()
 
     image_tool.ainvoke.assert_awaited_once_with({"file_path": "photo.jpg"})
-    assert approval_calls == [
-        ("load_workspace_image", {"file_path": "photo.jpg"})
-    ]
-    assert any(
-        message is image_attachment for message in model.calls[1]
-    )
+    assert approval_calls == [("load_workspace_image", {"file_path": "photo.jpg"})]
+    assert any(message is image_attachment for message in model.calls[1])
 
 
 @pytest.mark.asyncio
@@ -2527,8 +2550,11 @@ async def test_online_runtime_never_invokes_local_microphone_tool(
     monkeypatch.setattr(agent, "ONLINE_PERMISSION_OVERRIDE", False)
     microphone = MagicMock(description="Record audio using the local microphone")
     microphone.ainvoke = AsyncMock(return_value="private transcription")
-    monkeypatch.setattr(agent, "AVAILABLE_TOOLS", {"record_microphone_audio": microphone})
+    monkeypatch.setattr(
+        agent, "AVAILABLE_TOOLS", {"record_microphone_audio": microphone}
+    )
     monkeypatch.setattr(agent, "LOCAL_MEDIA_TOOL_NAMES", {"record_microphone_audio"})
+
     class FakeModelListResponse:
         def raise_for_status(self):
             return None
@@ -2597,9 +2623,7 @@ async def test_online_runtime_never_invokes_local_microphone_tool(
 
     microphone.ainvoke.assert_not_awaited()
     refusal = next(
-        message
-        for message in model.calls[1]
-        if isinstance(message, ToolMessage)
+        message for message in model.calls[1] if isinstance(message, ToolMessage)
     )
     assert refusal.tool_call_id == "online-microphone-call"
     assert "local-only" in refusal.content
@@ -2643,6 +2667,7 @@ async def test_mcp_tool_timeout_is_returned_without_claiming_completion(
         "prompt_user_input",
         AsyncMock(side_effect=["Run the MCP operation", "exit"]),
     )
+
     def answer_prompt(prompt):
         if "Choose permission mode" in prompt:
             return "3"
@@ -2708,9 +2733,7 @@ async def test_sensitive_tool_arguments_are_not_logged_or_persisted(
     assert "private-tool-secret" not in "\n".join(output)
     persisted = PersistentMemory(db_path=str(database_path))
     try:
-        contents = persisted.conn.execute(
-            "SELECT content FROM chat_history"
-        ).fetchall()
+        contents = persisted.conn.execute("SELECT content FROM chat_history").fetchall()
         assert all("private-tool-secret" not in row[0] for row in contents)
     finally:
         persisted.close()
@@ -2802,9 +2825,7 @@ async def test_mcp_startup_failure_does_not_skip_other_servers_or_shutdown(
     await run_agent_cli_async()
 
     assert discovered == ["unavailable", "healthy"]
-    assert any(
-        tool is healthy_tool for tool in model.bound_tools
-    )
+    assert any(tool is healthy_tool for tool in model.bound_tools)
     assert cleanup == ["mcp"]
     assert "mcp_healthy_probe" not in agent.AVAILABLE_TOOLS
     assert "mcp_healthy_probe" not in agent.MCP_TOOL_NAMES
@@ -2886,8 +2907,10 @@ async def test_local_tool_incompatibility_fallback_preserves_task_context_and_po
     assert "Configured system instructions." in system_prompt
     assert "This is the local Ollama provider." in system_prompt
     assert "Answer using local tools" in fallback.calls[0][-1].content
-    assert all("explicitly selected online provider" not in str(message.content)
-               for message in fallback.calls[0])
+    assert all(
+        "explicitly selected online provider" not in str(message.content)
+        for message in fallback.calls[0]
+    )
 
 
 @pytest.mark.asyncio
@@ -2942,9 +2965,12 @@ async def test_local_runtime_does_not_fallback_on_unrecognized_request_failure(
         AsyncMock(side_effect=["Try the selected model", "exit"]),
     )
     inputs.side_effect = lambda prompt: (
-        "1" if "Select model choice" in prompt
-        else "1" if "Choose provider" in prompt
-        else "2" if "Choose permission mode" in prompt
+        "1"
+        if "Select model choice" in prompt
+        else "1"
+        if "Choose provider" in prompt
+        else "2"
+        if "Choose permission mode" in prompt
         else ""
     )
 
@@ -2988,9 +3014,7 @@ async def test_cli_tool_denial_has_no_workspace_side_effect(scripted_local_cli):
 
     assert not (workspace / "denied.txt").exists()
     tool_results = [
-        message
-        for message in model.calls[1]
-        if isinstance(message, ToolMessage)
+        message for message in model.calls[1] if isinstance(message, ToolMessage)
     ]
     assert len(tool_results) == 1
     assert tool_results[0].tool_call_id == "edit-call"
@@ -3045,9 +3069,7 @@ async def test_cli_does_not_call_web_tool_after_offline_consent_decline(
 
     web_tool.ainvoke.assert_not_awaited()
     tool_results = [
-        message
-        for message in model.calls[1]
-        if isinstance(message, ToolMessage)
+        message for message in model.calls[1] if isinstance(message, ToolMessage)
     ]
     assert len(tool_results) == 1
     assert tool_results[0].tool_call_id == "web-call"
@@ -3137,9 +3159,7 @@ async def test_cli_does_not_call_web_tool_after_online_consent_decline(
 
     web_tool.ainvoke.assert_not_awaited()
     tool_result = next(
-        message
-        for message in model.calls[1]
-        if isinstance(message, ToolMessage)
+        message for message in model.calls[1] if isinstance(message, ToolMessage)
     )
     assert tool_result.tool_call_id == "web-consent-call"
     assert "not approved" in tool_result.content
@@ -3155,15 +3175,11 @@ async def test_local_model_tool_call_count_is_not_capped(
     model.responses = [
         AIMessage(
             content="",
-            tool_calls=[
-                {"name": "unknown_tool", "args": {}, "id": "local-tool-1"}
-            ],
+            tool_calls=[{"name": "unknown_tool", "args": {}, "id": "local-tool-1"}],
         ),
         AIMessage(
             content="",
-            tool_calls=[
-                {"name": "unknown_tool", "args": {}, "id": "local-tool-2"}
-            ],
+            tool_calls=[{"name": "unknown_tool", "args": {}, "id": "local-tool-2"}],
         ),
         AIMessage(content="Both requested steps were attempted."),
         AIMessage(content="Local tool-loop test summary."),
@@ -3178,9 +3194,7 @@ async def test_local_model_tool_call_count_is_not_capped(
     await run_agent_cli_async()
 
     tool_results = [
-        message
-        for message in model.calls[2]
-        if isinstance(message, ToolMessage)
+        message for message in model.calls[2] if isinstance(message, ToolMessage)
     ]
     assert {message.tool_call_id for message in tool_results} >= {
         "local-tool-1",
@@ -3238,15 +3252,11 @@ async def test_online_model_applies_consented_tool_limits(
     model.responses = [
         AIMessage(
             content="",
-            tool_calls=[
-                {"name": "unknown_tool", "args": {}, "id": "online-tool-1"}
-            ],
+            tool_calls=[{"name": "unknown_tool", "args": {}, "id": "online-tool-1"}],
         ),
         AIMessage(
             content="",
-            tool_calls=[
-                {"name": "unknown_tool", "args": {}, "id": "online-tool-2"}
-            ],
+            tool_calls=[{"name": "unknown_tool", "args": {}, "id": "online-tool-2"}],
         ),
         AIMessage(content="The configured tool-call limit was reached."),
         AIMessage(content="Online tool-limit test summary."),
@@ -3273,8 +3283,7 @@ async def test_online_model_applies_consented_tool_limits(
         message
         for call in model.calls
         for message in call
-        if isinstance(message, ToolMessage)
-        and message.tool_call_id == "online-tool-2"
+        if isinstance(message, ToolMessage) and message.tool_call_id == "online-tool-2"
     ]
     assert blocked_tool_messages
     assert all(
@@ -3302,6 +3311,7 @@ async def test_cli_help_and_attached_file_context(scripted_local_cli, monkeypatc
     dynamic_tool.name = "dynamic_test_tool"
     monkeypatch.setitem(agent.AVAILABLE_TOOLS, dynamic_tool.name, dynamic_tool)
     printed = []
+
     def capture_print(*values, **kwargs):
         output = io.StringIO()
         RichConsole(file=output, width=120, force_terminal=False).print(
@@ -3362,9 +3372,7 @@ async def test_cli_help_and_attached_file_context(scripted_local_cli, monkeypatc
     try:
         session_id = memory.get_latest_session_id()
         assert session_id is not None
-        assert [
-            message.content for message in memory.load_history(session_id)
-        ] == [
+        assert [message.content for message in memory.load_history(session_id)] == [
             "What does the folder context say?",
             "The folder context mentions Cedar.",
             "What is the codename?",
@@ -3372,8 +3380,7 @@ async def test_cli_help_and_attached_file_context(scripted_local_cli, monkeypatc
         ]
         assert all(
             "project context about Cedar" not in message.content
-            and "The private project codename is Juniper."
-            not in message.content
+            and "The private project codename is Juniper." not in message.content
             for message in memory.load_history(session_id)
         )
     finally:
@@ -3517,8 +3524,7 @@ async def test_ready_summary_is_compact_and_shows_local_hardware_only_for_local(
     assert "local-model (1.00 GiB VRAM)" in rendered
     assert hardware_status.call_count == 2
     assert all(
-        call.args[0] == agent.OLLAMA_BASE_URL
-        for call in hardware_status.call_args_list
+        call.args[0] == agent.OLLAMA_BASE_URL for call in hardware_status.call_args_list
     )
 
 
@@ -3621,10 +3627,7 @@ async def test_online_cli_turn_excludes_unapproved_local_history(
 
     await run_agent_cli_async()
 
-    sent_content = "\n".join(
-        str(message.content)
-        for message in model.calls[0]
-    )
+    sent_content = "\n".join(str(message.content) for message in model.calls[0])
     assert "What is the weather?" in sent_content
     assert "User-approved attached project detail." in sent_content
     assert "private local history" not in sent_content
@@ -3723,21 +3726,15 @@ async def test_online_tool_failure_redacts_sensitive_args_and_keeps_only_approve
     inputs.side_effect = answer_prompt
     await run_agent_cli_async()
 
-    sent_content = "\n".join(
-        str(message.content) for message in model.calls[0]
-    )
-    tool_result_content = "\n".join(
-        str(message.content) for message in model.calls[1]
-    )
+    sent_content = "\n".join(str(message.content) for message in model.calls[0])
+    tool_result_content = "\n".join(str(message.content) for message in model.calls[1])
     assert "The explicitly attached offline note." in sent_content
     assert "unapproved local secret" not in sent_content
     assert "unapproved local response" not in sent_content
     assert "[REDACTED]" in tool_result_content
     assert secret not in tool_result_content
     assert secret not in "\n".join(printed)
-    failing_tool.ainvoke.assert_awaited_once_with(
-        {"nested": {"api_key": secret}}
-    )
+    failing_tool.ainvoke.assert_awaited_once_with({"nested": {"api_key": secret}})
 
     persisted = PersistentMemory(db_path=str(database_path))
     try:
@@ -3745,7 +3742,9 @@ async def test_online_tool_failure_redacts_sensitive_args_and_keeps_only_approve
             "SELECT role, content FROM chat_history"
         ).fetchall()
         assert all(secret not in str(row) for row in rows)
-        assert all("The explicitly attached offline note." not in row[1] for row in rows)
+        assert all(
+            "The explicitly attached offline note." not in row[1] for row in rows
+        )
     finally:
         persisted.close()
 
@@ -3860,9 +3859,10 @@ async def test_online_cli_uses_mock_http_boundary_without_unapproved_history(
                         ],
                     },
                 ]
-                data = "".join(
-                    f"data: {json.dumps(chunk)}\n\n" for chunk in chunks
-                ) + "data: [DONE]\n\n"
+                data = (
+                    "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+                    + "data: [DONE]\n\n"
+                )
                 encoded = data.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
@@ -3920,9 +3920,10 @@ async def test_online_cli_uses_mock_http_boundary_without_unapproved_history(
                         ],
                     },
                 ]
-                data = "".join(
-                    f"data: {json.dumps(chunk)}\n\n" for chunk in chunks
-                ) + "data: [DONE]\n\n"
+                data = (
+                    "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+                    + "data: [DONE]\n\n"
+                )
                 encoded = data.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
@@ -3952,6 +3953,7 @@ async def test_online_cli_uses_mock_http_boundary_without_unapproved_history(
         "prompt_user_input",
         AsyncMock(side_effect=["What is the weather?", "exit"]),
     )
+
     def online_cli_input(prompt):
         if "KB) files directory" in prompt:
             return ""
@@ -3989,17 +3991,12 @@ async def test_online_cli_uses_mock_http_boundary_without_unapproved_history(
         thread.join(timeout=2)
 
     expected_requests = (
-        3 if post_status == "tool"
-        else 2 if post_status == 200 or share_context
-        else 1
+        3 if post_status == "tool" else 2 if post_status == 200 or share_context else 1
     )
     assert len(received) == expected_requests
     assert all(auth == "Bearer test-session-api-key" for auth, _ in received)
     serialized_requests = json.dumps([request for _, request in received])
-    assert any(
-        "What is the weather?" in json.dumps(request)
-        for _, request in received
-    )
+    assert any("What is the weather?" in json.dumps(request) for _, request in received)
     if share_context:
         assert "private local history" in serialized_requests
         assert "private local answer" in serialized_requests
@@ -4017,8 +4014,7 @@ async def test_online_cli_uses_mock_http_boundary_without_unapproved_history(
             "SELECT content FROM chat_history"
         ).fetchall()
         assert all(
-            "test-session-api-key" not in str(row[0])
-            for row in persisted_values
+            "test-session-api-key" not in str(row[0]) for row in persisted_values
         )
     finally:
         persisted.close()
@@ -4157,7 +4153,10 @@ async def test_cli_code_task_keeps_failed_final_verification_visible(
         saved_response = memory.load_history(session_id)[-1].content
         assert "The project is completed and verified." in saved_response
         assert "Final verification blocked." in saved_response
-        assert "not verified" in saved_response.lower() or "blocked" in saved_response.lower()
+        assert (
+            "not verified" in saved_response.lower()
+            or "blocked" in saved_response.lower()
+        )
     finally:
         memory.close()
 
@@ -4332,7 +4331,10 @@ async def test_checkpoint_system_failure_is_returned_to_runtime_call(monkeypatch
     result = await execute_tool_call(
         {
             "name": "checkpoint_code_task",
-            "args": {"label": "implement feature", "paths": ["app.py", "tests/test_app.py"]},
+            "args": {
+                "label": "implement feature",
+                "paths": ["app.py", "tests/test_app.py"],
+            },
             "id": "checkpoint-git-failure",
         },
         permission_mode="full",
@@ -4349,11 +4351,10 @@ async def test_concurrent_tool_execution():
         return f"res_{val}"
 
     results = await asyncio.gather(
-        sample_tool_task("alpha"),
-        sample_tool_task("beta"),
-        sample_tool_task("gamma")
+        sample_tool_task("alpha"), sample_tool_task("beta"), sample_tool_task("gamma")
     )
     assert results == ["res_alpha", "res_beta", "res_gamma"]
+
 
 @pytest.mark.asyncio
 async def test_concurrent_tool_execution_with_edge_case_exceptions():
@@ -4364,12 +4365,11 @@ async def test_concurrent_tool_execution_with_edge_case_exceptions():
         return f"ok_{val}"
 
     results = await asyncio.gather(
-        faulty_tool_task(1, False),
-        faulty_tool_task(2, True),
-        return_exceptions=True
+        faulty_tool_task(1, False), faulty_tool_task(2, True), return_exceptions=True
     )
     assert results[0] == "ok_1"
     assert isinstance(results[1], ValueError)
+
 
 @patch("private_agent.agent.runtime.ChatOllama")
 def test_model_fallback_on_tool_incompatibility(mock_chat_ollama):
@@ -4381,6 +4381,7 @@ def test_model_fallback_on_tool_incompatibility(mock_chat_ollama):
 
     model = get_robust_chat_model("primary_model", "fallback_model", tools=[])
     assert model is not None
+
 
 @patch("private_agent.agent.runtime.ChatOllama")
 def test_model_fallback_total_failure_edge_case(mock_chat_ollama):
@@ -4397,11 +4398,15 @@ def test_model_fallback_total_failure_edge_case(mock_chat_ollama):
     except Exception:
         pass
 
+
 @patch("private_agent.agent.runtime.ChatOllama")
-def test_model_fallback_does_not_hide_unrecognized_configuration_error(mock_chat_ollama):
+def test_model_fallback_does_not_hide_unrecognized_configuration_error(
+    mock_chat_ollama,
+):
     mock_chat_ollama.side_effect = ValueError("invalid temperature configuration")
     assert get_robust_chat_model("primary_model", "fallback_model") is None
     mock_chat_ollama.assert_called_once()
+
 
 @patch("private_agent.agent.runtime.ollama.Client")
 def test_model_capabilities_are_read_from_ollama_metadata(mock_client):
@@ -4488,7 +4493,9 @@ async def test_summarize_command_then_exit_does_not_resummarize(
     monkeypatch.setattr(
         agent,
         "prompt_user_input",
-        AsyncMock(side_effect=["hello", "/summarize", "/summarize", "/compact", "exit"]),
+        AsyncMock(
+            side_effect=["hello", "/summarize", "/summarize", "/compact", "exit"]
+        ),
     )
     model.responses = [
         AIMessage(content="hi there"),
@@ -4496,9 +4503,13 @@ async def test_summarize_command_then_exit_does_not_resummarize(
         AIMessage(content="COMPACT-SUMMARY"),
     ]
     inputs.side_effect = lambda prompt: (
-        "n" if "Resume latest session" in prompt
-        else "1" if "Choose provider" in prompt or "Select model choice" in prompt
-        else "2" if "permission mode" in prompt else ""
+        "n"
+        if "Resume latest session" in prompt
+        else "1"
+        if "Choose provider" in prompt or "Select model choice" in prompt
+        else "2"
+        if "permission mode" in prompt
+        else ""
     )
     await run_agent_cli_async()
     out = capsys.readouterr().out
@@ -4520,16 +4531,27 @@ async def test_exit_prints_session_statistics_table(
     )
     model.responses = [AIMessage(content="hi there"), AIMessage(content="the summary")]
     inputs.side_effect = lambda prompt: (
-        "n" if "Resume latest session" in prompt
-        else "1" if "Choose provider" in prompt or "Select model choice" in prompt
-        else "2" if "permission mode" in prompt else ""
+        "n"
+        if "Resume latest session" in prompt
+        else "1"
+        if "Choose provider" in prompt or "Select model choice" in prompt
+        else "2"
+        if "permission mode" in prompt
+        else ""
     )
     await run_agent_cli_async()
     out = capsys.readouterr().out
     for label in (
-        "Session Statistics", "SQL session ID", "Agent (permission) mode",
-        "Model provider", "Input tokens", "Output tokens", "Total tokens",
-        "Tool uses", "Total session time", "Summary tokens generated",
+        "Session Statistics",
+        "SQL session ID",
+        "Agent (permission) mode",
+        "Model provider",
+        "Input tokens",
+        "Output tokens",
+        "Total tokens",
+        "Tool uses",
+        "Total session time",
+        "Summary tokens generated",
         "Summary generation time",
     ):
         assert label in out

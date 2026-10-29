@@ -121,6 +121,8 @@ def delete_chat_history_entry_from_sqlite(entry_id: int, session_id: str) -> str
                 deleted = cursor.rowcount
         if deleted:
             return f"Success: Deleted SQLite history entry {entry_id} from session '{session_id}'."
-        return "No matching SQLite history entry was deleted; verify its ID and session."
+        return (
+            "No matching SQLite history entry was deleted; verify its ID and session."
+        )
     except Exception as exc:
         return f"Error deleting SQLite history entry: {exc}"

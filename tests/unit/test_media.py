@@ -11,6 +11,7 @@ except ImportError:
     # Fallback definition if not explicitly exposed in private_agent.agent
     def get_robust_chat_model(primary_model_name, fallback_model_name, tools=None):
         from langchain_ollama import ChatOllama
+
         try:
             model = ChatOllama(model=primary_model_name)
             if tools:
@@ -21,6 +22,7 @@ except ImportError:
             if tools:
                 model = model.bind_tools(tools)
             return model
+
 
 from private_agent.tools.media import (
     capture_webcam_image,
@@ -33,6 +35,7 @@ from private_agent.tools.media import (
 )
 
 console = Console()
+
 
 def test_webcam_capture_keeps_image_transient_and_releases_device(monkeypatch):
     class CapturedFrame:
@@ -69,12 +72,12 @@ def test_webcam_capture_keeps_image_transient_and_releases_device(monkeypatch):
     assert message.content[1]["type"] == "image_url"
     assert "ZmFrZS1qcGVnLWZyYW1l" in message.content[1]["image_url"]["url"]
     from langchain_ollama import ChatOllama
-    converted = ChatOllama(model="test")._convert_messages_to_ollama_messages(
-        [message]
-    )
+
+    converted = ChatOllama(model="test")._convert_messages_to_ollama_messages([message])
     assert converted[0]["role"] == "user"
     assert converted[0]["images"] == ["ZmFrZS1qcGVnLWZyYW1l"]
     assert consume_captured_image(f"camera-image:{match.group(1)}") is None
+
 
 def test_media_capture_consent_prompt_shows_y_n_choices(monkeypatch):
     import private_agent.tools.media as media_tools
@@ -87,6 +90,7 @@ def test_media_capture_consent_prompt_shows_y_n_choices(monkeypatch):
     assert not media_tools.approve_local_capture("capture_webcam_image", {})
     rendered_prompt = render_console_values(prompt.call_args.args[0], end="")
     assert "[y/N]" in rendered_prompt
+
 
 def test_microphone_transcription_uses_local_model_without_downloading(
     monkeypatch, tmp_path
@@ -120,17 +124,17 @@ def test_microphone_transcription_uses_local_model_without_downloading(
         sys.modules,
         {"sounddevice": sounddevice, "faster_whisper": faster_whisper},
     ):
-        result = record_microphone_audio.invoke({
-            "duration_seconds": 2,
-            "device_index": 2,
-        })
+        result = record_microphone_audio.invoke(
+            {
+                "duration_seconds": 2,
+                "device_index": 2,
+            }
+        )
     assert "local words" in result
     assert "Offline microphone transcript" in result
 
 
-def test_workspace_video_sampling_is_bounded_and_transient(
-    monkeypatch, temp_workspace
-):
+def test_workspace_video_sampling_is_bounded_and_transient(monkeypatch, temp_workspace):
     import private_agent.tools.media as media
 
     video_path = temp_workspace / "clip.mp4"
@@ -179,9 +183,7 @@ def test_workspace_video_sampling_is_bounded_and_transient(
     media._captured_images.clear()
 
     result = load_workspace_video.invoke({"file_path": "clip.mp4"})
-    references = __import__("re").findall(
-        r"video-image:([0-9a-f]{32})", result
-    )
+    references = __import__("re").findall(r"video-image:([0-9a-f]{32})", result)
 
     assert len(references) == 3
     assert capture.read_count == 3
@@ -189,8 +191,12 @@ def test_workspace_video_sampling_is_bounded_and_transient(
     assert capture.released
     assert "not saved" in result
     messages = [captured_image_message(f"video-image:{ref}") for ref in references]
-    assert all(message.content[0]["text"].endswith("video frame.") for message in messages)
-    assert all(consume_captured_image(f"video-image:{ref}") is None for ref in references)
+    assert all(
+        message.content[0]["text"].endswith("video frame.") for message in messages
+    )
+    assert all(
+        consume_captured_image(f"video-image:{ref}") is None for ref in references
+    )
 
 
 def test_workspace_audio_file_is_bounded_and_transcribed_locally(
@@ -212,9 +218,7 @@ def test_workspace_audio_file_is_bounded_and_transcribed_locally(
         assert audio_file.read(4) == b"RIFF"
         return "locally transcribed words"
 
-    monkeypatch.setattr(
-        "private_agent.tools.media._transcribe_local_audio", transcribe
-    )
+    monkeypatch.setattr("private_agent.tools.media._transcribe_local_audio", transcribe)
     result = transcribe_workspace_audio.invoke({"file_path": "speech.wav"})
 
     assert "1.0s" in result
@@ -321,10 +325,7 @@ def test_runtime_attaches_every_transient_video_frame(monkeypatch):
     import private_agent.agent.runtime as agent
     from langchain_core.messages import HumanMessage, ToolMessage
 
-    references = [
-        f"video-image:{index:032x}"
-        for index in range(3)
-    ]
+    references = [f"video-image:{index:032x}" for index in range(3)]
     attached = []
 
     def capture(reference):
@@ -346,6 +347,7 @@ def test_runtime_attaches_every_transient_video_frame(monkeypatch):
     assert attached == references
     assert [message.content for message in messages] == references
 
+
 def test_microphone_device_listing_reports_available_input_indexes():
     sounddevice = types.ModuleType("sounddevice")
     sounddevice.query_devices = lambda: [
@@ -357,6 +359,7 @@ def test_microphone_device_listing_reports_available_input_indexes():
     assert "1: Internal microphone (input channels: 1)" in result
     assert "Output only" not in result
 
+
 @pytest.mark.asyncio
 async def test_media_tools_require_local_runtime_authorization(monkeypatch):
     import private_agent.agent.runtime as agent
@@ -364,11 +367,13 @@ async def test_media_tools_require_local_runtime_authorization(monkeypatch):
     camera = MagicMock()
     camera.invoke.return_value = "should not run"
     monkeypatch.setattr(agent, "AVAILABLE_TOOLS", {"capture_webcam_image": camera})
-    result = await agent.execute_tool_call({
-        "name": "capture_webcam_image",
-        "args": {"device_index": 0},
-        "id": "camera-no-consent",
-    })
+    result = await agent.execute_tool_call(
+        {
+            "name": "capture_webcam_image",
+            "args": {"device_index": 0},
+            "id": "camera-no-consent",
+        }
+    )
     assert "local-model session" in result.content
     camera.invoke.assert_not_called()
 

@@ -24,12 +24,14 @@ from private_agent.tools import (
 from private_agent.agent import (
     execute_tool_call,
 )
+
 try:
     from private_agent.agent import get_robust_chat_model
 except ImportError:
     # Fallback definition if not explicitly exposed in private_agent.agent
     def get_robust_chat_model(primary_model_name, fallback_model_name, tools=None):
         from langchain_ollama import ChatOllama
+
         try:
             model = ChatOllama(model=primary_model_name)
             if tools:
@@ -83,7 +85,9 @@ async def test_mcp_approval_redacts_sensitive_arguments(monkeypatch):
     monkeypatch.setattr(agent.sys, "stdin", MagicMock(isatty=lambda: True))
     logged = []
     prompts = []
-    monkeypatch.setattr(agent.console, "print", lambda *args, **kwargs: logged.append(str(args)))
+    monkeypatch.setattr(
+        agent.console, "print", lambda *args, **kwargs: logged.append(str(args))
+    )
     monkeypatch.setattr(
         agent.console,
         "input",
@@ -94,11 +98,13 @@ async def test_mcp_approval_redacts_sensitive_arguments(monkeypatch):
         "nested": {"access_token": "secret-token-value"},
         "query": "ordinary query",
     }
-    result = await execute_tool_call({
-        "name": "mcp_secret_test",
-        "args": call_args,
-        "id": "mcp-call",
-    })
+    result = await execute_tool_call(
+        {
+            "name": "mcp_secret_test",
+            "args": call_args,
+            "id": "mcp-call",
+        }
+    )
     assert result.content == "done"
     mcp_tool.ainvoke.assert_awaited_once_with(call_args)
     assert all(
@@ -142,8 +148,7 @@ async def test_mcp_tool_errors_redact_sensitive_arguments_from_output_and_logs(
     )
 
     logged_events = [
-        call.kwargs["extra"]["event"]
-        for call in logger.log.call_args_list
+        call.kwargs["extra"]["event"] for call in logger.log.call_args_list
     ]
     assert "[REDACTED]" in result.content
     assert secret not in result.content
@@ -226,6 +231,7 @@ def test_sandbox_path_validation(temp_workspace):
     with pytest.raises(PermissionError):
         SandboxManager.validate_path("/etc/passwd")
 
+
 def test_shell_command_evaluation():
     assert evaluate_shell_command("ls -la") is False
     assert evaluate_shell_command("python -m pytest") is False
@@ -233,6 +239,7 @@ def test_shell_command_evaluation():
     assert evaluate_shell_command("sudo apt update") is True
     assert evaluate_shell_command("rm -rf /") is True
     assert evaluate_shell_command("chmod 777 script.py") is True
+
 
 def test_file_tools_in_sandbox(temp_workspace):
     file_path = "hello.txt"
@@ -287,9 +294,7 @@ def test_workspace_search_tools_find_files_and_text(temp_workspace):
     binary.write_bytes(b"Juniper\x00binary")
 
     files = search_workspace_files.invoke({"pattern": "**/*.py"})
-    matches = search_workspace_text.invoke(
-        {"query": "juniper", "pattern": "*.py"}
-    )
+    matches = search_workspace_text.invoke({"query": "juniper", "pattern": "*.py"})
 
     assert "src/main.py" in files
     assert "hidden.py" not in files
@@ -372,9 +377,10 @@ def test_workspace_symbol_search_skips_symlink_escape_and_invalid_utf8(
         pytest.skip("Symlinks are unavailable")
     (temp_workspace / "invalid.py").write_bytes(b"class PrivateType:\xff\n")
 
-    assert search_workspace_symbols.invoke(
-        {"symbol": "PrivateType"}
-    ) == "No declarations found for symbol 'PrivateType'."
+    assert (
+        search_workspace_symbols.invoke({"symbol": "PrivateType"})
+        == "No declarations found for symbol 'PrivateType'."
+    )
 
 
 def test_workspace_image_input_validates_path_and_size(temp_workspace, monkeypatch):
@@ -383,9 +389,7 @@ def test_workspace_image_input_validates_path_and_size(temp_workspace, monkeypat
 
     oversized = temp_workspace / "large.png"
     oversized.write_bytes(b"x" * (MAX_CAPTURED_IMAGE_BYTES + 1))
-    assert "safety limit" in load_workspace_image.invoke(
-        {"file_path": "large.png"}
-    )
+    assert "safety limit" in load_workspace_image.invoke({"file_path": "large.png"})
     assert "supported image file extension" in load_workspace_image.invoke(
         {"file_path": "notes.txt"}
     )
@@ -419,6 +423,7 @@ def test_workspace_image_input_normalizes_and_consumes_single_use_image(
     cv2.imdecode = MagicMock(return_value=frame)
     cv2.resize = MagicMock(return_value=frame)
     cv2.imencode = MagicMock(return_value=(True, FakeEncodedImage()))
+
     class FakeImageHeader:
         size = (3840, 2160)
 
@@ -429,9 +434,7 @@ def test_workspace_image_input_normalizes_and_consumes_single_use_image(
             return None
 
     pil = types.ModuleType("PIL")
-    pil.Image = types.SimpleNamespace(
-        open=MagicMock(return_value=FakeImageHeader())
-    )
+    pil.Image = types.SimpleNamespace(open=MagicMock(return_value=FakeImageHeader()))
     monkeypatch.setitem(sys.modules, "cv2", cv2)
     monkeypatch.setitem(sys.modules, "PIL", pil)
     monkeypatch.setattr(media, "_image_capture_count", 0)
@@ -444,7 +447,10 @@ def test_workspace_image_input_normalizes_and_consumes_single_use_image(
     assert "not copied or saved" in result
     assert cv2.resize.call_args.args[1] == (1280, 720)
     message = media.captured_image_message(reference)
-    assert message.content[0]["text"] == "Analyze this user-approved local workspace image."
+    assert (
+        message.content[0]["text"]
+        == "Analyze this user-approved local workspace image."
+    )
     assert "data:image/jpeg;base64," in message.content[1]["image_url"]["url"]
     assert media.captured_image_message(reference) is None
 
@@ -460,6 +466,7 @@ def test_workspace_image_rejects_excessive_decoded_dimensions(
     cv2 = types.ModuleType("cv2")
     cv2.IMREAD_COLOR = 1
     cv2.imdecode = MagicMock()
+
     class FakeImageHeader:
         size = (MAX_DECODED_IMAGE_PIXELS + 1, 1)
 
@@ -470,9 +477,7 @@ def test_workspace_image_rejects_excessive_decoded_dimensions(
             return None
 
     pil = types.ModuleType("PIL")
-    pil.Image = types.SimpleNamespace(
-        open=MagicMock(return_value=FakeImageHeader())
-    )
+    pil.Image = types.SimpleNamespace(open=MagicMock(return_value=FakeImageHeader()))
     monkeypatch.setitem(sys.modules, "cv2", cv2)
     monkeypatch.setitem(sys.modules, "PIL", pil)
     monkeypatch.setitem(
@@ -509,9 +514,7 @@ def test_workspace_search_tools_reject_traversal_and_symlink_escape(
         {"query": "must", "pattern": "../*"}
     )
     assert "escape.py" not in search_workspace_files.invoke({"pattern": "*.py"})
-    assert "must stay outside" not in search_workspace_text.invoke(
-        {"query": "must"}
-    )
+    assert "must stay outside" not in search_workspace_text.invoke({"query": "must"})
 
 
 def test_workspace_git_inspection_is_read_only_and_bounded(temp_workspace):
@@ -718,7 +721,9 @@ def test_workspace_rename_does_not_overwrite_racing_destination(
 
 
 @pytest.mark.asyncio
-async def test_workspace_mutations_require_runtime_approval(temp_workspace, monkeypatch):
+async def test_workspace_mutations_require_runtime_approval(
+    temp_workspace, monkeypatch
+):
     import private_agent.agent.runtime as agent
 
     source = temp_workspace / "app.py"
@@ -794,7 +799,9 @@ async def test_workspace_rename_and_delete_require_runtime_approval(
         *snapshot_dir.glob("renamed.txt_*.bak"),
     ]
     assert len(snapshots) == 2
-    assert all(path.read_text(encoding="utf-8") == "recoverable content" for path in snapshots)
+    assert all(
+        path.read_text(encoding="utf-8") == "recoverable content" for path in snapshots
+    )
 
 
 def test_workspace_rename_and_delete_are_recoverable_and_collision_safe(
@@ -852,6 +859,7 @@ def test_read_binary_file_guard(temp_workspace):
     assert "Error" in res
     assert "binary file" in res
 
+
 def test_read_oversized_file_guard(temp_workspace):
     large_file = temp_workspace / "large.txt"
     large_file.write_text("A" * (1024 * 1024 + 10), encoding="utf-8")
@@ -860,27 +868,36 @@ def test_read_oversized_file_guard(temp_workspace):
     assert "Error" in res
     assert "exceeds the maximum allowed size" in res
 
+
 def test_non_interactive_shell_blocking(temp_workspace):
     res = run_shell_command.invoke({"command": "sudo rm -rf /"})
     assert "Error" in res
     assert "requires an interactive terminal" in res
 
+
 def test_shell_command_requires_explicit_approval(temp_workspace):
-    with patch("private_agent.tools.shell.sys.stdin", MagicMock(isatty=lambda: True)), patch(
-        "private_agent.tools.shell.console.input", return_value="n"
-    ), patch("subprocess.run") as run:
+    with (
+        patch("private_agent.tools.shell.sys.stdin", MagicMock(isatty=lambda: True)),
+        patch("private_agent.tools.shell.console.input", return_value="n"),
+        patch("subprocess.run") as run,
+    ):
         result = run_shell_command.invoke({"command": "echo no"})
     assert "was not approved" in result
     run.assert_not_called()
 
+
 def test_tool_catalog_shows_origin_permissions_and_effects(monkeypatch):
     import private_agent.tools as tools
 
-    monkeypatch.setattr(tools, "AVAILABLE_TOOLS", {
-        "edit_local_file": MagicMock(description="Write a workspace file"),
-        "web_search": MagicMock(description="Search the web"),
-        "mcp_read": MagicMock(description="Read from a server"),
-    })
+    monkeypatch.setattr(
+        tools,
+        "AVAILABLE_TOOLS",
+        {
+            "edit_local_file": MagicMock(description="Write a workspace file"),
+            "web_search": MagicMock(description="Search the web"),
+            "mcp_read": MagicMock(description="Read from a server"),
+        },
+    )
     monkeypatch.setattr(tools, "MCP_TOOL_NAMES", {"mcp_read"})
     monkeypatch.setattr(tools, "MCP_TOOL_SOURCES", {"mcp_read": "docs"})
     monkeypatch.setattr(tools, "MCP_TOOL_TRANSPORTS", {"mcp_read": "streamable_http"})
@@ -891,6 +908,7 @@ def test_tool_catalog_shows_origin_permissions_and_effects(monkeypatch):
     assert catalog["mcp_read"]["effects"] == "network-capable; server-defined effects"
     assert catalog["web_search"]["effects"] == "network"
     assert catalog["edit_local_file"]["effects"] == "may modify local state"
+
 
 def test_local_datetime_tool_reports_local_calendar_and_timezone():
     from datetime import datetime
@@ -904,6 +922,7 @@ def test_local_datetime_tool_reports_local_calendar_and_timezone():
     assert f"UTC{local_now:%z}" in result
     assert "Local date:" in result
     assert "Local time:" in result
+
 
 def test_local_datetime_tool_is_listed_as_read_only():
     catalog = {entry["name"]: entry for entry in describe_tool_catalog()}
@@ -936,10 +955,7 @@ def test_workspace_media_tools_are_registered_as_local_approved_tools():
         assert name in tools.AVAILABLE_TOOLS
         assert name in tools.LOCAL_MEDIA_TOOL_NAMES
 
-    catalog = {
-        entry["name"]: entry
-        for entry in describe_tool_catalog()
-    }
+    catalog = {entry["name"]: entry for entry in describe_tool_catalog()}
     assert catalog["load_workspace_video"]["effects"] == (
         "samples an explicitly approved workspace video"
     )
@@ -981,6 +997,7 @@ def test_agent_current_datetime_context_includes_local_date_and_timezone():
     assert f"{now:%A, %B} {now.day}, {now.year}" in context
     assert f"{now:%H:%M:%S %Z} (UTC{now:%z})" in context
     assert "authoritative current date/time" in context
+
 
 def test_tool_catalog_compactly_separates_names_descriptions_and_boundaries():
     import io
@@ -1029,11 +1046,14 @@ def test_override_tool_list_includes_platform_filtered_tools():
         patch.object(runtime, "AVAILABLE_TOOLS", {"run_shell_command": tool}),
         patch.object(runtime, "OVERRIDE_TOOL_LIST", frozenset()),
     ):
-        assert runtime._tools_for_model(
-            provider_type="local",
-            capabilities={"vision": True},
-            isolation_warning="sandbox unavailable",
-        ) == []
+        assert (
+            runtime._tools_for_model(
+                provider_type="local",
+                capabilities={"vision": True},
+                isolation_warning="sandbox unavailable",
+            )
+            == []
+        )
 
     with (
         patch.object(runtime, "AVAILABLE_TOOLS", {"run_shell_command": tool}),
@@ -1075,6 +1095,7 @@ def test_tool_catalog_marks_overridden_unavailable_entries_red_and_struck_out():
     rendered = output.getvalue()
     assert "run_shell_command (built-in) (override)" in rendered
     assert "\x1b[9;31m" in rendered
+
 
 @pytest.mark.asyncio
 async def test_mcp_transport_schema_validation(monkeypatch):
@@ -1144,9 +1165,7 @@ async def test_configured_mcp_http_transports_discover_tools(
     ):
         config = {"transport": transport, "url": url}
         config["timeout"] = 5
-        tools = await load_configured_mcp_tools(
-            "remote", config
-        )
+        tools = await load_configured_mcp_tools("remote", config)
 
     assert tools == [discovered_tool]
     assert captured["server_name"] == "remote"
@@ -1212,9 +1231,7 @@ async def test_live_mcp_transports_close_connections_after_discovery_and_calls(
         for _ in range(2):
             config = {"transport": transport, "url": url}
             config["timeout"] = 5
-            tools = await load_configured_mcp_tools(
-                "local", config
-            )
+            tools = await load_configured_mcp_tools("local", config)
             assert [tool.name for tool in tools] == ["add_one"]
             assert clients and all(client.is_closed for client in clients)
 
@@ -1232,10 +1249,15 @@ def test_ollama_client_kwargs_use_pinned_transports():
     langchain = ollama_langchain_client_kwargs()
     assert "client" not in sync
     assert sync["transport"]._pool._network_backend._allow_loopback is True
-    assert langchain["sync_client_kwargs"]["transport"]._pool._network_backend._allow_loopback
-    assert langchain["async_client_kwargs"]["transport"]._pool._network_backend._allow_loopback
+    assert langchain["sync_client_kwargs"][
+        "transport"
+    ]._pool._network_backend._allow_loopback
+    assert langchain["async_client_kwargs"][
+        "transport"
+    ]._pool._network_backend._allow_loopback
     assert sync["trust_env"] is False
     assert sync["follow_redirects"] is False
+
 
 def test_langchain_ollama_clients_are_tracked_and_closed():
     from langchain_ollama import ChatOllama, OllamaEmbeddings
@@ -1262,6 +1284,7 @@ def test_langchain_ollama_clients_are_tracked_and_closed():
     assert expected_clients.issubset(set(tools._outbound_http_clients))
     asyncio.run(close_outbound_http_clients())
     assert all(client.is_closed for client in expected_clients)
+
 
 def test_mcp_stdio_tools_are_loaded_with_isolated_command(monkeypatch):
     captured = {}
@@ -1291,16 +1314,19 @@ def test_mcp_stdio_tools_are_loaded_with_isolated_command(monkeypatch):
                 "langchain_mcp_adapters.client": adapter,
             },
         ):
-            assert asyncio.run(
-                load_configured_mcp_tools(
-                    "local",
-                    {
-                        "transport": "stdio",
-                        "command": "python",
-                        "args": ["-m", "server"],
-                    },
+            assert (
+                asyncio.run(
+                    load_configured_mcp_tools(
+                        "local",
+                        {
+                            "transport": "stdio",
+                            "command": "python",
+                            "args": ["-m", "server"],
+                        },
+                    )
                 )
-            ) == []
+                == []
+            )
         config = captured["configs"]["local"]
         assert config["command"] == isolated[0]
         assert config["args"] == isolated[1:]
@@ -1426,30 +1452,42 @@ def test_mcp_cleanup_continues_after_one_sandbox_removal_fails(monkeypatch, tmp_
 
 
 def test_download_restricted_extension(temp_workspace):
-    res = download_web_file.invoke({"url": "http://example.com/script.sh", "save_path": "script.sh"})
+    res = download_web_file.invoke(
+        {"url": "http://example.com/script.sh", "save_path": "script.sh"}
+    )
     assert "Error" in res
     assert "restricted by security policy" in res
 
+
 def test_shell_command_tool(temp_workspace):
-    with patch("private_agent.tools.shell.sys.stdin", MagicMock(isatty=lambda: True)), patch(
-        "private_agent.tools.shell.console.input", return_value="y"
+    with (
+        patch("private_agent.tools.shell.sys.stdin", MagicMock(isatty=lambda: True)),
+        patch("private_agent.tools.shell.console.input", return_value="y"),
     ):
         res = run_shell_command.invoke({"command": "echo 'sandbox integration test'"})
     assert "Exit Code: 0" in res
     assert "sandbox integration test" in res
+
 
 @patch("mcp.client.stdio.stdio_client")
 @patch("mcp.client.session.ClientSession")
 @pytest.mark.asyncio
 async def test_load_mcp_tools_mocked(mock_client_session, mock_stdio_client):
     mock_session = AsyncMock()
-    mock_session.list_tools.return_value = MagicMock(tools=[
-        MagicMock(name="mcp_tool_1", description="MCP tool desc", inputSchema={"type": "object"})
-    ])
+    mock_session.list_tools.return_value = MagicMock(
+        tools=[
+            MagicMock(
+                name="mcp_tool_1",
+                description="MCP tool desc",
+                inputSchema={"type": "object"},
+            )
+        ]
+    )
     mock_client_session.return_value.__aenter__.return_value = mock_session
 
     tools = await load_mcp_tools()
     assert isinstance(tools, list)
+
 
 @patch("mcp.client.stdio.stdio_client", side_effect=Exception("Connection timeout"))
 @pytest.mark.asyncio

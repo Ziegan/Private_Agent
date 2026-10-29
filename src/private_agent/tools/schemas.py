@@ -13,7 +13,9 @@ from ..config import (
 
 
 class ReadFileInput(BaseModel):
-    file_path: str = Field(..., description="Path to the file to read relative to workspace.")
+    file_path: str = Field(
+        ..., description="Path to the file to read relative to workspace."
+    )
 
 
 class EditFileInput(BaseModel):
@@ -126,7 +128,9 @@ class FetchWebpageInput(BaseModel):
 
 class DownloadWebFileInput(BaseModel):
     url: str = Field(..., description="URL of file to download.")
-    save_path: str = Field(..., description="Destination file path inside the workspace.")
+    save_path: str = Field(
+        ..., description="Destination file path inside the workspace."
+    )
 
 
 class ReadSqliteHistoryInput(BaseModel):
@@ -161,7 +165,9 @@ class SearchSqliteHistoryInput(BaseModel):
 
 
 class DeleteSqliteHistoryEntryInput(BaseModel):
-    entry_id: int = Field(..., ge=1, description="Entry ID returned by local history search.")
+    entry_id: int = Field(
+        ..., ge=1, description="Entry ID returned by local history search."
+    )
     session_id: str = Field(..., min_length=1, max_length=200)
 
 
