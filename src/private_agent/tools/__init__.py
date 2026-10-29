@@ -68,8 +68,10 @@ def approved_tool_invocation():
     finally:
         _tool_invocation_approved.reset(token)
 
+
 def set_active_db_path(path: str):
     _sqlite_state.set_active_db_path(path)
+
 
 # --- NETWORK CONNECTIVITY UTILITY ---
 def check_internet_connection(
@@ -86,29 +88,35 @@ def check_internet_connection(
         return False
 
 
-NETWORK_TOOL_NAMES = frozenset({
-    "web_search",
-    "fetch_webpage",
-    "download_web_file",
-    "fetch_current_location",
-    "get_weather",
-})
+NETWORK_TOOL_NAMES = frozenset(
+    {
+        "web_search",
+        "fetch_webpage",
+        "download_web_file",
+        "fetch_current_location",
+        "get_weather",
+    }
+)
 # Reveal the machine's own location, so they are limited to local sessions.
 LOCAL_ONLY_NETWORK_TOOL_NAMES = frozenset({"fetch_current_location"})
-LOCAL_MEDIA_TOOL_NAMES = frozenset({
-    "capture_webcam_image",
-    "load_workspace_image",
-    "load_workspace_video",
-    "list_microphone_devices",
-    "record_microphone_audio",
-    "transcribe_workspace_audio",
-})
+LOCAL_MEDIA_TOOL_NAMES = frozenset(
+    {
+        "capture_webcam_image",
+        "load_workspace_image",
+        "load_workspace_video",
+        "list_microphone_devices",
+        "record_microphone_audio",
+        "transcribe_workspace_audio",
+    }
+)
 MCP_TOOL_NAMES = set()
 MCP_TOOL_SOURCES = {}
 MCP_TOOL_TRANSPORTS = {}
-_ACTIVE_SKILL_DIRECTORY = os.path.abspath(
-    os.path.expanduser(SKILLS_FOLDER_DEFAULT)
-) if SKILLS_FOLDER_DEFAULT else None
+_ACTIVE_SKILL_DIRECTORY = (
+    os.path.abspath(os.path.expanduser(SKILLS_FOLDER_DEFAULT))
+    if SKILLS_FOLDER_DEFAULT
+    else None
+)
 _ACTIVE_SKILL_REGISTRY = None
 _ACTIVE_SKILL_SESSION_ID = None
 
@@ -151,7 +159,11 @@ def describe_tool_catalog() -> list[dict[str, str]]:
     )
     for name, tool_object in sorted(AVAILABLE_TOOLS.items()):
         is_mcp = name in MCP_TOOL_NAMES
-        origin = MCP_TOOL_SOURCES.get(name, "configured MCP server") if is_mcp else "built-in"
+        origin = (
+            MCP_TOOL_SOURCES.get(name, "configured MCP server")
+            if is_mcp
+            else "built-in"
+        )
         if is_mcp:
             permission = (
                 "auto-approved by configuration"
@@ -194,7 +206,8 @@ def describe_tool_catalog() -> list[dict[str, str]]:
         }:
             permission = (
                 "no approval required; reads local SQLite history"
-                if name in {
+                if name
+                in {
                     "read_chat_history_from_sqlite",
                     "search_chat_history_in_sqlite",
                     "inspect_task_plan",
@@ -242,7 +255,8 @@ def describe_tool_catalog() -> list[dict[str, str]]:
         }:
             effects = (
                 "may modify local SQLite task state"
-                if name in {
+                if name
+                in {
                     "create_task_plan",
                     "revise_task_plan",
                     "update_todo_step",
@@ -271,13 +285,17 @@ def describe_tool_catalog() -> list[dict[str, str]]:
             )
         else:
             effects = "read-only/local"
-        catalog.append({
-            "name": name,
-            "origin": origin,
-            "permission": permission,
-            "effects": effects,
-            "description": str(getattr(tool_object, "description", "") or "").strip(),
-        })
+        catalog.append(
+            {
+                "name": name,
+                "origin": origin,
+                "permission": permission,
+                "effects": effects,
+                "description": str(
+                    getattr(tool_object, "description", "") or ""
+                ).strip(),
+            }
+        )
     return catalog
 
 
@@ -286,13 +304,16 @@ def has_internet_connection() -> bool:
         INTERNET_CHECK_HOST, INTERNET_CHECK_PORT, INTERNET_CHECK_TIMEOUT
     )
 
+
 def require_internet(func: Callable) -> Callable:
     """Decorator that validates active internet connection before executing a web-bound tool."""
+
     @wraps(func)
     def wrapper(*args, **kwargs):
         if not has_internet_connection():
             return "Error: Network unavailable. Please check your internet connection and try again."
         return func(*args, **kwargs)
+
     return wrapper
 
 
@@ -434,22 +455,23 @@ AVAILABLE_TOOLS = {
     "transcribe_workspace_audio": transcribe_workspace_audio,
 }
 
+
 async def load_mcp_tools(*args, **kwargs) -> list:
     """
     Connects to an MCP server, retrieves available tools, and returns them as a list.
-    Guarantees that an empty list ([]) is returned upon any connection error, 
+    Guarantees that an empty list ([]) is returned upon any connection error,
     timeout, or exception instead of a dictionary or None.
     """
     try:
         from mcp.client.stdio import stdio_client
         from mcp.client.session import ClientSession
-        
+
         # Establishing connection parameters and session
         async with stdio_client(*args, **kwargs) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 response = await session.list_tools()
-                
+
                 tools = []
                 for tool in getattr(response, "tools", []):
                     tools.append(tool)

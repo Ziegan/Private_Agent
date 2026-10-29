@@ -127,7 +127,9 @@ class CodeTaskWorkspace:
         else:
             from . import console
 
-            console.print(f"[cyan]Created isolated code workspace: {destination}[/cyan]")
+            console.print(
+                f"[cyan]Created isolated code workspace: {destination}[/cyan]"
+            )
 
         git_path = shutil.which("git")
         ask = confirm_without_git or _ask_without_git
@@ -188,10 +190,16 @@ class CodeTaskWorkspace:
                 return continue_without_git()
             from . import console
 
-            name = console.input("[cyan]Name for local project commits: [/cyan]").strip()
-            email = console.input("[cyan]Email for local project commits: [/cyan]").strip()
+            name = console.input(
+                "[cyan]Name for local project commits: [/cyan]"
+            ).strip()
+            email = console.input(
+                "[cyan]Email for local project commits: [/cyan]"
+            ).strip()
             if not name or not email:
-                if not ask("a local Git author name and email are required for commits"):
+                if not ask(
+                    "a local Git author name and email are required for commits"
+                ):
                     shutil.rmtree(destination)
                     return None
                 return continue_without_git()

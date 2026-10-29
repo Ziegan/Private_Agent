@@ -68,7 +68,9 @@ def inspect_ollama_hardware(
         client = factory(host=base_url)
         response = client.ps()
     except Exception as exc:
-        result["error"] = f"Could not query Ollama runtime status ({type(exc).__name__})."
+        result["error"] = (
+            f"Could not query Ollama runtime status ({type(exc).__name__})."
+        )
         return result
     finally:
         close = getattr(client, "close", None)
@@ -92,8 +94,7 @@ def inspect_ollama_hardware(
     if not models:
         result["placement"] = "no loaded models; active placement is unknown"
     elif any(
-        isinstance(_field(model, "size_vram"), int)
-        and _field(model, "size_vram") > 0
+        isinstance(_field(model, "size_vram"), int) and _field(model, "size_vram") > 0
         for model in models
     ):
         result["placement"] = "GPU VRAM allocation reported by Ollama"
@@ -128,7 +129,7 @@ def format_hardware_status(status: dict[str, Any]) -> str:
             allocation_text = (
                 "VRAM unknown"
                 if allocation is None
-                else f"{allocation / (1024 ** 3):.2f} GiB VRAM"
+                else f"{allocation / (1024**3):.2f} GiB VRAM"
             )
             model_details.append(f"{model['name']} ({allocation_text})")
         lines.append("Loaded models: " + ", ".join(model_details))

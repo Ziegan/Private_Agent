@@ -2,9 +2,7 @@
 
 from . import runtime as _runtime
 
-__all__ = [
-    name for name in vars(_runtime) if not name.startswith("__")
-]
+__all__ = [name for name in vars(_runtime) if not name.startswith("__")]
 
 
 def __getattr__(name: str):

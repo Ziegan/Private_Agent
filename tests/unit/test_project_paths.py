@@ -10,9 +10,9 @@ def test_project_resources_are_discovered_from_all_supported_locations(tmp_path)
 
     assert result.workspace == (tmp_path / "workspace").resolve()
     assert result.rag == (tmp_path / "resources" / "rag").resolve()
-    assert result.skills == (
-        tmp_path / "private_agent" / "resources" / "skills"
-    ).resolve()
+    assert (
+        result.skills == (tmp_path / "private_agent" / "resources" / "skills").resolve()
+    )
 
 
 def test_project_root_folder_takes_precedence_over_resource_folders(tmp_path):

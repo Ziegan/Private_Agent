@@ -22,9 +22,7 @@ def test_terminal_summary_counts_results_and_lists_all_failed_tests(monkeypatch)
                     wasxfail=None,
                 )
             ],
-            "failed": [
-                SimpleNamespace(nodeid="tests/unit/test_config.py::test_fails")
-            ],
+            "failed": [SimpleNamespace(nodeid="tests/unit/test_config.py::test_fails")],
             "skipped": [],
         },
         lines=[],

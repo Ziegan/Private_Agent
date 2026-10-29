@@ -3,26 +3,30 @@
 from collections.abc import Callable
 from typing import Any
 
-MUTATING_TOOL_NAMES = frozenset({
-    "edit_local_file",
-    "apply_workspace_patch",
-    "rename_workspace_file",
-    "delete_workspace_file",
-    "run_shell_command",
-    "download_web_file",
-    "delete_chat_history_from_sqlite",
-    "delete_chat_history_entry_from_sqlite",
-    "create_skill",
-    "run_project_unit_tests",
-    "checkpoint_code_task",
-    "finalize_code_task",
-})
-MONITORED_COMMAND_TOOL_NAMES = frozenset({
-    "run_shell_command",
-    "run_project_unit_tests",
-    "checkpoint_code_task",
-    "finalize_code_task",
-})
+MUTATING_TOOL_NAMES = frozenset(
+    {
+        "edit_local_file",
+        "apply_workspace_patch",
+        "rename_workspace_file",
+        "delete_workspace_file",
+        "run_shell_command",
+        "download_web_file",
+        "delete_chat_history_from_sqlite",
+        "delete_chat_history_entry_from_sqlite",
+        "create_skill",
+        "run_project_unit_tests",
+        "checkpoint_code_task",
+        "finalize_code_task",
+    }
+)
+MONITORED_COMMAND_TOOL_NAMES = frozenset(
+    {
+        "run_shell_command",
+        "run_project_unit_tests",
+        "checkpoint_code_task",
+        "finalize_code_task",
+    }
+)
 CODING_ACCESS_LEVELS = {
     "full_hitl": (
         "Full workspace access — network-enabled commands; ask before every tool action"
@@ -36,9 +40,7 @@ CODING_ACCESS_LEVELS = {
     "isolated_governed": (
         "Isolated workspace copy — read freely; ask before edits and commands"
     ),
-    "isolated_hitl": (
-        "Fully isolated workspace copy — ask before every tool action"
-    ),
+    "isolated_hitl": ("Fully isolated workspace copy — ask before every tool action"),
 }
 
 
@@ -54,7 +56,8 @@ def tool_needs_permission(
     if permission_mode == "monitored":
         return (
             name in MONITORED_COMMAND_TOOL_NAMES
-            or name in mcp_tool_names and name not in mcp_auto_approve_tools
+            or name in mcp_tool_names
+            and name not in mcp_auto_approve_tools
         )
     if permission_mode == "full":
         return False
@@ -62,7 +65,8 @@ def tool_needs_permission(
         return name not in network_tool_names or not network_authorized
     return (
         name in MUTATING_TOOL_NAMES
-        or name in mcp_tool_names and name not in mcp_auto_approve_tools
+        or name in mcp_tool_names
+        and name not in mcp_auto_approve_tools
     )
 
 
@@ -125,9 +129,11 @@ def select_permission_mode(
     console.print("[bold cyan][Agent Permission Mode][/bold cyan]")
     for number, mode in enumerate(("manual", "auto", "full"), 1):
         console.print(f"  {number}. {labels[mode]}")
-    selection = console.input(
-        f"Choose permission mode [1/2/3] (default: {configured}): "
-    ).strip().lower()
+    selection = (
+        console.input(f"Choose permission mode [1/2/3] (default: {configured}): ")
+        .strip()
+        .lower()
+    )
     if not selection:
         return configured
     modes = {"1": "manual", "2": "auto", "3": "full"}
@@ -141,9 +147,7 @@ def _request_summary(tool_name: str, tool_args: dict[str, Any]) -> str:
         place = tool_args.get("location") or "current location (public IP lookup)"
         return f"weather for {place} on {tool_args.get('date') or 'today'}"
     return (
-        tool_args.get("query")
-        or tool_args.get("url")
-        or "request details unavailable"
+        tool_args.get("query") or tool_args.get("url") or "request details unavailable"
     )
 
 
@@ -169,10 +173,14 @@ async def authorize_network_research(
                 "Internet connectivity is unavailable. Offline evidence may be "
                 "incomplete; no web request was made."
             )
-        choice = console.input(
-            "[yellow]Internet is unavailable. Restore access and retry (r), "
-            "continue with incomplete offline data (c), or cancel (x)? [/yellow]"
-        ).strip().lower()
+        choice = (
+            console.input(
+                "[yellow]Internet is unavailable. Restore access and retry (r), "
+                "continue with incomplete offline data (c), or cancel (x)? [/yellow]"
+            )
+            .strip()
+            .lower()
+        )
         if choice == "r":
             if not internet_check():
                 return False, (
@@ -189,7 +197,9 @@ async def authorize_network_research(
 
     if consent_policy == "never":
         return False, "Online research is disabled by the configured consent policy."
-    session_consent_state = session_consent_state if session_consent_state is not None else {}
+    session_consent_state = (
+        session_consent_state if session_consent_state is not None else {}
+    )
     # Full mode already approves every tool call for the session.
     full_mode = permission_mode == "full"
     needs_session_consent = (
@@ -202,10 +212,14 @@ async def authorize_network_research(
         if not is_interactive():
             return False, "Online search requires interactive user consent."
         request_summary = _request_summary(tool_name, tool_args)
-        choice = console.input(
-            f"[yellow]'{tool_name}' will send this to an external service: "
-            f"{request_summary}\nProceed? \\[y/N]: [/yellow]"
-        ).strip().lower()
+        choice = (
+            console.input(
+                f"[yellow]'{tool_name}' will send this to an external service: "
+                f"{request_summary}\nProceed? \\[y/N]: [/yellow]"
+            )
+            .strip()
+            .lower()
+        )
         if choice != "y":
             return False, "Online research was not approved; use offline evidence only."
         if needs_session_consent:
@@ -214,10 +228,14 @@ async def authorize_network_research(
         if not is_interactive():
             return False, "Online search requires interactive user approval."
         request_summary = _request_summary(tool_name, tool_args)
-        choice = console.input(
-            f"[yellow]Approve this '{tool_name}' action for the current request: "
-            f"{request_summary}\nProceed? \\[y/N]: [/yellow]"
-        ).strip().lower()
+        choice = (
+            console.input(
+                f"[yellow]Approve this '{tool_name}' action for the current request: "
+                f"{request_summary}\nProceed? \\[y/N]: [/yellow]"
+            )
+            .strip()
+            .lower()
+        )
         if choice != "y":
             return False, "Online research was not approved; no request was made."
     return True, ""

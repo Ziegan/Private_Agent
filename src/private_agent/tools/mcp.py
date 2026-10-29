@@ -49,12 +49,17 @@ async def load_configured_mcp_tools(server_name: str, server_config: dict) -> li
             "use stdio, sse, or streamable_http."
         )
     if transport == "stdio":
-        if not isinstance(server_config.get("command"), str) or not server_config["command"].strip():
+        if (
+            not isinstance(server_config.get("command"), str)
+            or not server_config["command"].strip()
+        ):
             raise ValueError(f"MCP stdio server '{server_name}' requires a command.")
         if not isinstance(server_config.get("args", []), list) or any(
             not isinstance(arg, str) for arg in server_config.get("args", [])
         ):
-            raise ValueError(f"MCP stdio server '{server_name}' args must be a string list.")
+            raise ValueError(
+                f"MCP stdio server '{server_name}' args must be a string list."
+            )
         environment = server_config.get("env")
         if environment is not None and (
             not isinstance(environment, dict)

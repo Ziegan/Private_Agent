@@ -7,6 +7,7 @@ import uuid
 
 SNAPSHOT_DIR = pathlib.Path(".agent_snapshots").resolve()
 
+
 class SandboxManager:
     root_dir: pathlib.Path = pathlib.Path.cwd().resolve()
 
@@ -23,14 +24,14 @@ class SandboxManager:
         try:
             p = pathlib.Path(file_path)
             raw_target = p if p.is_absolute() else (cls.root_dir / file_path)
-            
+
             # Strengthen path validation by explicitly resolving all symlinks via os.path.realpath
             real_target_str = os.path.realpath(str(raw_target))
             real_root_str = os.path.realpath(str(cls.root_dir))
-            
+
             target = pathlib.Path(real_target_str)
             root = pathlib.Path(real_root_str)
-            
+
             if not target.is_relative_to(root):
                 raise PermissionError
             return target
@@ -39,25 +40,51 @@ class SandboxManager:
                 f"Security Violation: Access denied outside workspace root ({cls.root_dir})"
             ) from None
 
+
 def create_hitl_snapshot(target_path: pathlib.Path):
     if target_path.exists():
         root = SandboxManager.root_dir.resolve()
         source = target_path.resolve()
         if not source.is_relative_to(root):
-            raise PermissionError("Cannot create a snapshot outside the active workspace.")
+            raise PermissionError(
+                "Cannot create a snapshot outside the active workspace."
+            )
         snapshot_dir = root / ".agent_snapshots"
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         if not snapshot_dir.resolve().is_relative_to(root):
-            raise PermissionError("Workspace snapshot directory cannot escape the workspace.")
+            raise PermissionError(
+                "Workspace snapshot directory cannot escape the workspace."
+            )
         backup_name = f"{target_path.name}_{uuid.uuid4().hex}.bak"
         shutil.copy2(source, snapshot_dir / backup_name)
+
 
 def evaluate_shell_command(command: str) -> bool:
     cmd_lower = command.lower()
     elevated_keywords = ["sudo", "su ", "pkexec", "doas", "chmod 777", "chown"]
-    destructive_keywords = ["rm -rf", "rm -r", "mkfs", "dd if=", "> /dev/", ">/dev/", ":(){ :|:& };:"]
-    is_risky = any(kw in cmd_lower for kw in elevated_keywords) or any(kw in cmd_lower for kw in destructive_keywords)
-    system_paths = ["/etc", "/var", "/usr", "/bin", "/sbin", "/lib", "/root", "/sys", "/proc"]
+    destructive_keywords = [
+        "rm -rf",
+        "rm -r",
+        "mkfs",
+        "dd if=",
+        "> /dev/",
+        ">/dev/",
+        ":(){ :|:& };:",
+    ]
+    is_risky = any(kw in cmd_lower for kw in elevated_keywords) or any(
+        kw in cmd_lower for kw in destructive_keywords
+    )
+    system_paths = [
+        "/etc",
+        "/var",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/lib",
+        "/root",
+        "/sys",
+        "/proc",
+    ]
     if any(p in command for p in system_paths):
         is_risky = True
     return is_risky

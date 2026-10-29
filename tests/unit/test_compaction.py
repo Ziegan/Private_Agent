@@ -24,7 +24,9 @@ class FakeLLM:
 
 def history(count):
     return [
-        (HumanMessage if i % 2 == 0 else AIMessage)(content=f"message {i} " + "word " * 50)
+        (HumanMessage if i % 2 == 0 else AIMessage)(
+            content=f"message {i} " + "word " * 50
+        )
         for i in range(count)
     ]
 
@@ -42,7 +44,9 @@ def test_compact_history_keeps_recent_and_updates_summary():
     llm, notes = FakeLLM("NEW SUMMARY"), []
     h = history(10)
     recent, summary = asyncio.run(
-        compact_history(llm, h, "old", keep_recent=4, max_chars=100, notify=notes.append)
+        compact_history(
+            llm, h, "old", keep_recent=4, max_chars=100, notify=notes.append
+        )
     )
     assert recent == h[-4:] and summary == "NEW SUMMARY"
     assert "old" in llm.calls[0][1].content and "message 0" in llm.calls[0][1].content
@@ -51,7 +55,9 @@ def test_compact_history_keeps_recent_and_updates_summary():
 
 def test_compact_history_failure_falls_back_without_losing_summary():
     recent, summary = asyncio.run(
-        compact_history(FakeLLM(fail=True), history(10), "keep", keep_recent=4, max_chars=100)
+        compact_history(
+            FakeLLM(fail=True), history(10), "keep", keep_recent=4, max_chars=100
+        )
     )
     assert len(recent) == 4 and summary == "keep"
 

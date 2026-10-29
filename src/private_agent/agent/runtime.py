@@ -200,15 +200,15 @@ _SESSION_STATS = SessionStats()
 _SESSION_INFO: dict[str, Any] = {}
 TASK_LEASE_SECONDS = 180
 TASK_LEASE_RENEW_INTERVAL_SECONDS = 30
-OS_ISOLATED_TOOL_NAMES = frozenset({
-    "run_shell_command",
-    "run_project_unit_tests",
-    "checkpoint_code_task",
-    "finalize_code_task",
-})
-_MODEL_CAPABILITIES_CACHE: Dict[
-    tuple[str, str], Dict[str, Optional[bool] | int]
-] = {}
+OS_ISOLATED_TOOL_NAMES = frozenset(
+    {
+        "run_shell_command",
+        "run_project_unit_tests",
+        "checkpoint_code_task",
+        "finalize_code_task",
+    }
+)
+_MODEL_CAPABILITIES_CACHE: Dict[tuple[str, str], Dict[str, Optional[bool] | int]] = {}
 
 
 def _close_ollama_client(client):
@@ -235,7 +235,9 @@ def _task_age_label(created_at: str) -> str:
             created = created.replace(tzinfo=timezone.utc)
         age_seconds = max(
             0,
-            (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).total_seconds(),
+            (
+                datetime.now(timezone.utc) - created.astimezone(timezone.utc)
+            ).total_seconds(),
         )
     except (TypeError, ValueError):
         return "age unavailable"
@@ -332,16 +334,22 @@ def _tool_unavailable_reason(
         not ENABLE_WEB_RESEARCH or WEB_RESEARCH_CONSENT == "never"
     ):
         return "Online research is disabled by configuration."
-    if name in LOCAL_ONLY_NETWORK_TOOL_NAMES and not _device_tools_allowed(provider_type):
+    if name in LOCAL_ONLY_NETWORK_TOOL_NAMES and not _device_tools_allowed(
+        provider_type
+    ):
         return "Current-location lookup requires the Local provider."
     if name in LOCAL_MEDIA_TOOL_NAMES:
         if not _device_tools_allowed(provider_type):
             return "Local media tools require the Local provider."
-        if name in {
-            "capture_webcam_image",
-            "load_workspace_image",
-            "load_workspace_video",
-        } and capabilities.get("vision") is not True:
+        if (
+            name
+            in {
+                "capture_webcam_image",
+                "load_workspace_image",
+                "load_workspace_video",
+            }
+            and capabilities.get("vision") is not True
+        ):
             return "The selected local model does not declare vision support."
     return None
 
@@ -360,7 +368,8 @@ def _tools_for_model(
             provider_type=provider_type,
             capabilities=capabilities,
             isolation_warning=isolation_warning,
-        ) is None
+        )
+        is None
         or name in OVERRIDE_TOOL_LIST
     ]
 
@@ -374,12 +383,12 @@ def _print_tool_catalog(
     unavailable_names = set(unavailable_names)
     override_tool_list = set(override_tool_list)
     overridden_unavailable = unavailable_names & override_tool_list
-    available_count = len(entries) - len(unavailable_names & {
-        entry["name"] for entry in entries
-    })
-    overridden_count = len(overridden_unavailable & {
-        entry["name"] for entry in entries
-    })
+    available_count = len(entries) - len(
+        unavailable_names & {entry["name"] for entry in entries}
+    )
+    overridden_count = len(
+        overridden_unavailable & {entry["name"] for entry in entries}
+    )
     table = Table(
         title=(
             f"Tool Catalog ({available_count} available, "
@@ -451,9 +460,7 @@ def _build_startup_memory_context(
             ):
                 values = plan.get(key, [])
                 if values:
-                    plan_notes.append(
-                        f"{label}: {'; '.join(values[:2])[:200]}"
-                    )
+                    plan_notes.append(f"{label}: {'; '.join(values[:2])[:200]}")
             episode_sections.append(
                 f"Episode {episode['id']} (session {episode['session_id']}, "
                 f"{episode['timestamp']})\n"
@@ -462,11 +469,7 @@ def _build_startup_memory_context(
                 f"Task summary: {str(episode.get('task_summary') or '')[:400]}\n"
                 f"Outcome: {str(episode.get('outcome') or '')[:200]}\n"
                 f"Plan: {plan_preview or 'No plan details'}"
-                + (
-                    "\n" + "\n".join(plan_notes)
-                    if plan_notes
-                    else ""
-                )
+                + ("\n" + "\n".join(plan_notes) if plan_notes else "")
             )
         else:
             summary = " ".join(str(episode["content"]).split())
@@ -567,14 +570,10 @@ def _build_relevant_episode_context(
     """Retrieve a few similar episodes while keeping provenance and size bounded."""
     recent_ids = {
         episode["id"]
-        for episode in memory.get_recent_episodic_memories(
-            DEFAULT_EPISODIC_SUMMARIES
-        )
+        for episode in memory.get_recent_episodic_memories(DEFAULT_EPISODIC_SUMMARIES)
     }
     matches = memory.search_relevant_episodic_memories(query, limit=100)
-    candidates = [
-        episode for episode in matches if episode["id"] not in recent_ids
-    ]
+    candidates = [episode for episode in matches if episode["id"] not in recent_ids]
     sections = []
     for episode in candidates[:MAX_RELEVANT_EPISODES]:
         if episode.get("topic"):
@@ -740,9 +739,7 @@ def _run_learning_maintenance(memory: PersistentMemory, command: str) -> None:
         return
     if action == "propose":
         if len(parts) < 5:
-            console.print(
-                "Usage: learn propose <TASK_ID> <scope> <statement>."
-            )
+            console.print("Usage: learn propose <TASK_ID> <scope> <statement>.")
             return
         if not sys.stdin.isatty():
             console.print(
@@ -754,7 +751,8 @@ def _run_learning_maintenance(memory: PersistentMemory, command: str) -> None:
         task = memory.get_task(task_prefix)
         if task is None:
             matches = [
-                item for item in memory.list_tasks()
+                item
+                for item in memory.list_tasks()
                 if item["task_id"].startswith(task_prefix)
             ]
             if len(matches) > 1:
@@ -767,7 +765,9 @@ def _run_learning_maintenance(memory: PersistentMemory, command: str) -> None:
             or task.get("validation_revision") != task.get("revision")
             or not task.get("validation_evidence")
             or not any(step["status"] == "verified" for step in task["steps"])
-            or any(step["status"] not in {"verified", "skipped"} for step in task["steps"])
+            or any(
+                step["status"] not in {"verified", "skipped"} for step in task["steps"]
+            )
         ):
             console.print(
                 "[yellow]Learning proposals require a completed task with "
@@ -791,7 +791,8 @@ def _run_learning_maintenance(memory: PersistentMemory, command: str) -> None:
             console.print("[yellow]Choose a valid learning scope.[/yellow]")
             return
         evidence = "\n".join(
-            f"- {step['description']}" for step in task["steps"]
+            f"- {step['description']}"
+            for step in task["steps"]
             if step["status"] == "verified"
         )
         console.print(
@@ -804,15 +805,21 @@ def _run_learning_maintenance(memory: PersistentMemory, command: str) -> None:
                 border_style="cyan",
             )
         )
-        if console.input(
-            "Review this task-derived proposal? Type PREVIEW TASK LEARNING: "
-        ).strip() != "PREVIEW TASK LEARNING":
+        if (
+            console.input(
+                "Review this task-derived proposal? Type PREVIEW TASK LEARNING: "
+            ).strip()
+            != "PREVIEW TASK LEARNING"
+        ):
             console.print("[yellow]Learning proposal cancelled.[/yellow]")
             return
-        if console.input(
-            "Save this preference for future eligible prompts? "
-            "Type SAVE LEARNED ITEM: "
-        ).strip() != "SAVE LEARNED ITEM":
+        if (
+            console.input(
+                "Save this preference for future eligible prompts? "
+                "Type SAVE LEARNED ITEM: "
+            ).strip()
+            != "SAVE LEARNED ITEM"
+        ):
             console.print("[yellow]Learning proposal was not saved.[/yellow]")
             return
         item = memory.add_learned_item(
@@ -836,10 +843,13 @@ def _run_learning_maintenance(memory: PersistentMemory, command: str) -> None:
             return
         if action == "add":
             scope, statement = parts[2], " ".join(parts[3:])
-            if console.input(
-                "Do not store secrets or sensitive personal data. "
-                "Type SAVE LEARNED ITEM to confirm: "
-            ).strip() != "SAVE LEARNED ITEM":
+            if (
+                console.input(
+                    "Do not store secrets or sensitive personal data. "
+                    "Type SAVE LEARNED ITEM to confirm: "
+                ).strip()
+                != "SAVE LEARNED ITEM"
+            ):
                 console.print("[yellow]Learning item was not saved.[/yellow]")
                 return
             item = memory.add_learned_item(
@@ -849,9 +859,10 @@ def _run_learning_maintenance(memory: PersistentMemory, command: str) -> None:
             )
         else:
             item_id, scope, statement = parts[2], parts[3], " ".join(parts[4:])
-            if console.input(
-                "Apply this correction? Type APPLY CORRECTION: "
-            ).strip() != "APPLY CORRECTION":
+            if (
+                console.input("Apply this correction? Type APPLY CORRECTION: ").strip()
+                != "APPLY CORRECTION"
+            ):
                 console.print("[yellow]Learning correction cancelled.[/yellow]")
                 return
             item = _resolve_learned_item(memory, item_id)
@@ -901,8 +912,7 @@ def _run_learning_maintenance(memory: PersistentMemory, command: str) -> None:
         elif action == "review":
             reviewed = memory.review_learned_item(item["item_id"])
             console.print(
-                "[green]Learned item renewed through "
-                f"{reviewed['expires_at']}.[/green]"
+                f"[green]Learned item renewed through {reviewed['expires_at']}.[/green]"
             )
         else:
             memory.set_learned_item_status(
@@ -923,7 +933,8 @@ def _resolve_learned_item(memory: PersistentMemory, prefix: str) -> Optional[dic
     if exact is not None:
         return exact
     matches = [
-        item for item in memory.list_learned_items()
+        item
+        for item in memory.list_learned_items()
         if item["item_id"].startswith(prefix)
     ]
     return matches[0] if len(matches) == 1 else None
@@ -963,7 +974,8 @@ async def _run_learning_suggestion(
     task = memory.get_task(task_prefix)
     if task is None:
         matches = [
-            item for item in memory.list_tasks()
+            item
+            for item in memory.list_tasks()
             if item["task_id"].startswith(task_prefix)
         ]
         if len(matches) > 1:
@@ -1136,14 +1148,16 @@ async def _run_memory_maintenance(
                         _run_learning_maintenance(memory, command)
                 except (ValueError, sqlite3.Error, OSError) as exc:
                     console.print(
-                        f"[red][Learning state error] "
-                        f"{type(exc).__name__}: {exc}[/red]"
+                        f"[red][Learning state error] {type(exc).__name__}: {exc}[/red]"
                     )
                 continue
             if command.lower().startswith("rag"):
                 rag_command = command.split(maxsplit=1)
                 if len(rag_command) != 2 or rag_command[1].lower() not in {
-                    "status", "list", "reindex", "reset",
+                    "status",
+                    "list",
+                    "reindex",
+                    "reset",
                 }:
                     console.print(
                         "[yellow]Use: rag status, rag list, rag reindex, "
@@ -1181,17 +1195,20 @@ async def _run_memory_maintenance(
                         if state:
                             for source, fingerprint in sorted(state.items()):
                                 console.print(
-                                    f"  {source} "
-                                    f"({fingerprint.get('size', '?')} bytes)"
+                                    f"  {source} ({fingerprint.get('size', '?')} bytes)"
                                 )
                         else:
                             console.print("[yellow]No tracked RAG sources.[/yellow]")
                     continue
                 if rag_action == "reset":
-                    confirmation = console.input(
-                        "[red]Delete the configured local RAG index? "
-                        "Type 'reset rag' to confirm: [/red]"
-                    ).strip().lower()
+                    confirmation = (
+                        console.input(
+                            "[red]Delete the configured local RAG index? "
+                            "Type 'reset rag' to confirm: [/red]"
+                        )
+                        .strip()
+                        .lower()
+                    )
                     if confirmation != "reset rag":
                         console.print("[yellow]RAG reset cancelled.[/yellow]")
                         continue
@@ -1214,10 +1231,14 @@ async def _run_memory_maintenance(
                         "Set paths.rag_documents or enter a path in config.[/yellow]"
                     )
                     continue
-                confirmation = console.input(
-                    f"[yellow]Reindex local documents from '{rag_docs_path}'? "
-                    "Type 'reindex rag' to confirm: [/yellow]"
-                ).strip().lower()
+                confirmation = (
+                    console.input(
+                        f"[yellow]Reindex local documents from '{rag_docs_path}'? "
+                        "Type 'reindex rag' to confirm: [/yellow]"
+                    )
+                    .strip()
+                    .lower()
+                )
                 if confirmation != "reindex rag":
                     console.print("[yellow]RAG reindex cancelled.[/yellow]")
                     continue
@@ -1225,10 +1246,13 @@ async def _run_memory_maintenance(
                     vectorstore = initialize_knowledge_base(
                         rag_docs_path,
                         index_path=RAG_INDEX_PATH,
-                        confirm_rebuild=lambda detail: console.input(
-                            f"[yellow]RAG state is damaged: {detail}\n"
-                            "Preserve the old index and rebuild? Type REBUILD: [/yellow]"
-                        ).strip() == "REBUILD",
+                        confirm_rebuild=lambda detail: (
+                            console.input(
+                                f"[yellow]RAG state is damaged: {detail}\n"
+                                "Preserve the old index and rebuild? Type REBUILD: [/yellow]"
+                            ).strip()
+                            == "REBUILD"
+                        ),
                     )
                     if vectorstore is None:
                         console.print(
@@ -1259,7 +1283,9 @@ async def _run_memory_maintenance(
 
             entry = memory.get_episodic_memory(entry_id)
             if entry is None:
-                console.print(f"[yellow]No episodic memory with ID {entry_id}.[/yellow]")
+                console.print(
+                    f"[yellow]No episodic memory with ID {entry_id}.[/yellow]"
+                )
                 continue
 
             action = parts[0].lower()
@@ -1316,10 +1342,14 @@ async def _run_memory_maintenance(
                         f"{type(exc).__name__}: {exc}[/yellow]"
                     )
             else:
-                confirmation = console.input(
-                    f"[red]Delete episodic memory {entry_id} only? "
-                    f"Type 'delete {entry_id}' to confirm: [/red]"
-                ).strip().lower()
+                confirmation = (
+                    console.input(
+                        f"[red]Delete episodic memory {entry_id} only? "
+                        f"Type 'delete {entry_id}' to confirm: [/red]"
+                    )
+                    .strip()
+                    .lower()
+                )
                 if confirmation != f"delete {entry_id}":
                     console.print("[yellow]Deletion cancelled.[/yellow]")
                     continue
@@ -1343,8 +1373,7 @@ async def _run_memory_maintenance(
             )
         except Exception as exc:
             console.print(
-                f"[red][SQLite maintenance error] "
-                f"{type(exc).__name__}: {exc}[/red]"
+                f"[red][SQLite maintenance error] {type(exc).__name__}: {exc}[/red]"
             )
     return vectorstore
 
@@ -1422,13 +1451,10 @@ def _build_skill_capture_draft(task: dict, name: str) -> tuple[str, str]:
 
     def render_items(label: str, values: list[str]) -> str:
         safe_values = [_skill_safe_text(value) for value in values if value.strip()]
-        return (
-            f"## {label}\n"
-            + (
-                "\n".join(f"- {item}" for item in safe_values)
-                if safe_values
-                else "- Define a task-specific check before reusing this workflow."
-            )
+        return f"## {label}\n" + (
+            "\n".join(f"- {item}" for item in safe_values)
+            if safe_values
+            else "- Define a task-specific check before reusing this workflow."
         )
 
     do_steps = [
@@ -1437,15 +1463,9 @@ def _build_skill_capture_draft(task: dict, name: str) -> tuple[str, str]:
         if step["status"] == "verified"
     ]
     validation = [
-        item
-        for step in plan.get("steps", [])
-        for item in step.get("validation", [])
+        item for step in plan.get("steps", []) for item in step.get("validation", [])
     ]
-    proof = [
-        item
-        for step in plan.get("steps", [])
-        for item in step.get("proof", [])
-    ]
+    proof = [item for step in plan.get("steps", []) for item in step.get("proof", [])]
     tools_needed = (
         ["Local file and workspace inspection capabilities"]
         if task["task_type"] == "coding"
@@ -1522,9 +1542,13 @@ def _offer_skill_capture(
             "is configured.[/yellow]"
         )
         return
-    consent = console.input(
-        "May I draft a reusable Markdown skill from this verified task? [y/N]: "
-    ).strip().lower()
+    consent = (
+        console.input(
+            "May I draft a reusable Markdown skill from this verified task? [y/N]: "
+        )
+        .strip()
+        .lower()
+    )
     if consent not in {"y", "yes"}:
         return
     name = console.input("Skill name: ").strip()
@@ -1540,9 +1564,10 @@ def _offer_skill_capture(
             border_style="magenta",
         )
     )
-    if console.input(
-        f"Save this new skill? Type SAVE {normalized_name}: "
-    ).strip() != f"SAVE {normalized_name}":
+    if (
+        console.input(f"Save this new skill? Type SAVE {normalized_name}: ").strip()
+        != f"SAVE {normalized_name}"
+    ):
         console.print("[yellow]Skill was not saved.[/yellow]")
         return
     description = content.split("\n\n", maxsplit=2)[1]
@@ -1564,11 +1589,11 @@ def _offer_skill_capture(
             skill_path.unlink(missing_ok=True)
             raise
     except (OSError, ValueError, sqlite3.Error) as exc:
-        console.print(
-            f"[red][Skill capture error] {type(exc).__name__}: {exc}[/red]"
-        )
+        console.print(f"[red][Skill capture error] {type(exc).__name__}: {exc}[/red]")
         return
-    console.print(f"[green]Skill saved and linked to this session: {skill_path}[/green]")
+    console.print(
+        f"[green]Skill saved and linked to this session: {skill_path}[/green]"
+    )
 
 
 def _record_code_task_validation(
@@ -1577,14 +1602,18 @@ def _record_code_task_validation(
     result: str | None,
     owner_id: str,
 ) -> bool:
-    if not task_id or not result or not (
-        result.startswith(
-            (
-                "Tests passed, but Git initialization/",
-                "Checkpoint committed locally:",
+    if (
+        not task_id
+        or not result
+        or not (
+            result.startswith(
+                (
+                    "Tests passed, but Git initialization/",
+                    "Checkpoint committed locally:",
+                )
             )
+            or "final tests passed." in result
         )
-        or "final tests passed." in result
     ):
         return False
     task = memory.get_task(task_id)
@@ -1622,7 +1651,8 @@ def _planning_search_citations(result: str) -> list[str]:
                 or host.lower() == "localhost"
                 or host.lower().endswith(".local")
                 or host.lower().endswith(".localhost")
-                or "." not in host and ":" not in host
+                or "." not in host
+                and ":" not in host
             ):
                 continue
             try:
@@ -1650,8 +1680,7 @@ def _planning_search_citations(result: str) -> list[str]:
         ):
             seen_urls.add(normalized_url)
             citations.append(
-                "Untrusted planning search citation: "
-                f"{title}; URL: {normalized_url}"
+                f"Untrusted planning search citation: {title}; URL: {normalized_url}"
             )
         if len(citations) >= 10:
             break
@@ -1684,9 +1713,7 @@ def _prune_memory_retention(
                     candidate.unlink(missing_ok=True)
                     removed_files += int(existed)
                 except (OSError, ValueError) as exc:
-                    unsafe_files.append(
-                        f"{raw_path}: {type(exc).__name__}: {exc}"
-                    )
+                    unsafe_files.append(f"{raw_path}: {type(exc).__name__}: {exc}")
         else:
             unsafe_files.extend(
                 f"{path}: no skills directory is configured"
@@ -1766,7 +1793,8 @@ def _run_task_management(
         if task is not None:
             return task
         matches = [
-            item for item in memory.list_tasks()
+            item
+            for item in memory.list_tasks()
             if item["task_id"].startswith(identifier)
         ]
         if len(matches) > 1:
@@ -1827,8 +1855,7 @@ def _run_task_management(
                         "consented citations are references only and have not "
                         "been independently verified.\n\n"
                     )
-                    if task["task_type"] == "research"
-                    and research_validation_current
+                    if task["task_type"] == "research" and research_validation_current
                     else (
                         "Research evidence status: INCOMPLETE. Plan approval "
                         "does not verify facts or sources; research questions "
@@ -1839,8 +1866,7 @@ def _run_task_management(
                     else ""
                 )
                 + (
-                    "Task validation: "
-                    f"{task['validation_evidence']}\n\n"
+                    f"Task validation: {task['validation_evidence']}\n\n"
                     if task.get("validation_revision") == task["revision"]
                     and task.get("validation_evidence")
                     else ""
@@ -1865,10 +1891,22 @@ def _run_task_management(
             continue
         parts = command.split(maxsplit=3)
         action = parts[0].lower() if parts else ""
-        if action in {
-            "approve", "resume", "pause", "cancel", "verify", "validate",
-            "reconcile", "complete", "discard", "delete",
-        } and not sys.stdin.isatty():
+        if (
+            action
+            in {
+                "approve",
+                "resume",
+                "pause",
+                "cancel",
+                "verify",
+                "validate",
+                "reconcile",
+                "complete",
+                "discard",
+                "delete",
+            }
+            and not sys.stdin.isatty()
+        ):
             console.print(
                 "[yellow]Saved task plans are read-only in non-interactive "
                 "sessions; no approval or state change was applied.[/yellow]"
@@ -1896,10 +1934,22 @@ def _run_task_management(
                             f"action {action_record['action_id'][:12]})"
                         )
             continue
-        if action not in {
-            "approve", "resume", "pause", "cancel", "verify", "reconcile",
-            "validate", "complete", "discard", "delete"
-        } or len(parts) < 2:
+        if (
+            action
+            not in {
+                "approve",
+                "resume",
+                "pause",
+                "cancel",
+                "verify",
+                "reconcile",
+                "validate",
+                "complete",
+                "discard",
+                "delete",
+            }
+            or len(parts) < 2
+        ):
             console.print(
                 "Use list, view <ID>, approve <ID>, resume <ID>, pause <ID>, "
                 "cancel <ID>, verify <ID> <STEP_ID> <evidence>, "
@@ -1951,9 +2001,8 @@ def _run_task_management(
                             if source_input
                             else allowed_root
                         )
-                        if (
-                            not source_path.is_dir()
-                            or not source_path.is_relative_to(allowed_root)
+                        if not source_path.is_dir() or not source_path.is_relative_to(
+                            allowed_root
                         ):
                             console.print(
                                 "[yellow]Direct access must target an existing "
@@ -2180,9 +2229,7 @@ def _run_task_management(
                 )
             elif action == "reconcile":
                 if len(parts) != 4 or parts[3] not in {"completed", "not-run"}:
-                    console.print(
-                        "Usage: reconcile <ID> <ACTION_ID> completed|not-run"
-                    )
+                    console.print("Usage: reconcile <ID> <ACTION_ID> completed|not-run")
                     continue
                 action_matches = [
                     item
@@ -2214,8 +2261,7 @@ def _run_task_management(
                 console.print("[green]Action reconciliation saved in SQLite.[/green]")
             elif action == "complete":
                 confirmation = console.input(
-                    "Mark task complete only if every step is verified. "
-                    "Type COMPLETE: "
+                    "Mark task complete only if every step is verified. Type COMPLETE: "
                 ).strip()
                 if confirmation != "COMPLETE":
                     console.print("[yellow]Task completion cancelled.[/yellow]")
@@ -2305,9 +2351,7 @@ def _run_task_management(
                     for failure in failed_skill_deletions:
                         console.print(f"- {failure}")
         except (ValueError, sqlite3.Error, OSError) as exc:
-            console.print(
-                f"[red][Task state error] {type(exc).__name__}: {exc}[/red]"
-            )
+            console.print(f"[red][Task state error] {type(exc).__name__}: {exc}[/red]")
     return approved_for_execution_id
 
 
@@ -2358,17 +2402,13 @@ def _approved_coding_task_scope(
     if not _coding_uses_isolated_copy(access_level):
         try:
             selected_source = pathlib.Path(scope["source_path"]).resolve()
-            if (
-                not selected_source.is_dir()
-                or not selected_source.is_relative_to(SandboxManager.root_dir.resolve())
+            if not selected_source.is_dir() or not selected_source.is_relative_to(
+                SandboxManager.root_dir.resolve()
             ):
                 return None
         except (KeyError, OSError, RuntimeError, TypeError):
             return None
-    if (
-        scope.get("network_access")
-        is not _coding_allows_command_network(access_level)
-    ):
+    if scope.get("network_access") is not _coding_allows_command_network(access_level):
         return None
     return scope
 
@@ -2432,17 +2472,15 @@ def _make_chat_model(
     supports_thinking: Optional[bool],
     context_window: Optional[int] = None,
 ):
-    effective_context = min(
-        MAX_CONTEXT_TOKENS, context_window or MAX_CONTEXT_TOKENS
-    )
+    effective_context = min(MAX_CONTEXT_TOKENS, context_window or MAX_CONTEXT_TOKENS)
     return _create_local_chat_model(
         model_name,
         temperature=MODEL_TEMPERATURE,
         base_url=OLLAMA_BASE_URL,
         acceleration_mode=HARDWARE_ACCELERATION_MODE,
-        thinking=(
-            thinking_effort if thinking_enabled else False
-        ) if supports_thinking else None,
+        thinking=(thinking_effort if thinking_enabled else False)
+        if supports_thinking
+        else None,
         chat_model_factory=ChatOllama,
         client_kwargs=ollama_langchain_client_kwargs,
         acceleration_options=ollama_acceleration_options,
@@ -2934,8 +2972,7 @@ async def _invoke_with_status(
     elapsed = time.monotonic() - started
     if elapsed >= 2:
         console.print(
-            f"[dim][Completed][/dim] {status_message.rstrip('.')} "
-            f"in {elapsed:.1f}s."
+            f"[dim][Completed][/dim] {status_message.rstrip('.')} in {elapsed:.1f}s."
         )
     return response
 
@@ -3012,10 +3049,14 @@ def _select_permission_mode() -> str:
 def _offer_local_data_reset(memory: PersistentMemory) -> frozenset[str]:
     if not sys.stdin.isatty():
         return frozenset()
-    selection = console.input(
-        "[yellow]Local data reset: [1] Chroma knowledge index, "
-        "[2] SQLite conversation memory, [3] both (Enter to skip): [/yellow]"
-    ).strip().lower()
+    selection = (
+        console.input(
+            "[yellow]Local data reset: [1] Chroma knowledge index, "
+            "[2] SQLite conversation memory, [3] both (Enter to skip): [/yellow]"
+        )
+        .strip()
+        .lower()
+    )
     scopes = {"1": "chroma", "2": "sqlite", "3": "both"}
     scope = scopes.get(selection)
     if scope is None:
@@ -3026,7 +3067,9 @@ def _offer_local_data_reset(memory: PersistentMemory) -> frozenset[str]:
         "Type RESET to confirm: [/red]"
     ).strip()
     if confirmation != "RESET":
-        console.print("[yellow]Local data reset cancelled; no data was changed.[/yellow]")
+        console.print(
+            "[yellow]Local data reset cancelled; no data was changed.[/yellow]"
+        )
         return frozenset()
     if scope in {"chroma", "both"}:
         try:
@@ -3045,23 +3088,29 @@ def _offer_local_data_reset(memory: PersistentMemory) -> frozenset[str]:
             )
             reset_scopes.add("sqlite")
         except (sqlite3.Error, OSError, RuntimeError) as exc:
-            console.print(f"[red]SQLite reset failed ({type(exc).__name__}): {exc}[/red]")
+            console.print(
+                f"[red]SQLite reset failed ({type(exc).__name__}): {exc}[/red]"
+            )
     return frozenset(reset_scopes)
 
 
 def fetch_local_chat_models() -> List[str]:
     client = None
     try:
-        client = ollama.Client(
-            host=OLLAMA_BASE_URL, **ollama_client_kwargs()
-        )
+        client = ollama.Client(host=OLLAMA_BASE_URL, **ollama_client_kwargs())
         response = client.list()
-        models_list = response.get("models", []) if isinstance(response, dict) else getattr(response, "models", [])
+        models_list = (
+            response.get("models", [])
+            if isinstance(response, dict)
+            else getattr(response, "models", [])
+        )
         chat_models = []
         embedding_keywords = ["embed", "embedding", "bge", "e5", "nomic-embed"]
 
         for m in models_list:
-            model_name = m.get("model", "") if isinstance(m, dict) else getattr(m, "model", "")
+            model_name = (
+                m.get("model", "") if isinstance(m, dict) else getattr(m, "model", "")
+            )
             if not model_name:
                 continue
             if any(kw in model_name.lower() for kw in embedding_keywords):
@@ -3075,11 +3124,16 @@ def fetch_local_chat_models() -> List[str]:
         if client is not None:
             _close_ollama_client(client)
 
+
 def _redact_tool_arguments(value: Any) -> Any:
     if isinstance(value, dict):
         redacted = {}
         for key, item in value.items():
-            if re.search(r"(password|secret|token|api.?key|authorization|credential)", str(key), re.I):
+            if re.search(
+                r"(password|secret|token|api.?key|authorization|credential)",
+                str(key),
+                re.I,
+            ):
                 redacted[key] = "[REDACTED]"
             else:
                 redacted[key] = _redact_tool_arguments(item)
@@ -3101,7 +3155,9 @@ def _display_tool_request(tool_call: dict) -> None:
     )
 
 
-def _sensitive_argument_values(value: Any, *, sensitive_parent: bool = False) -> list[str]:
+def _sensitive_argument_values(
+    value: Any, *, sensitive_parent: bool = False
+) -> list[str]:
     if isinstance(value, dict):
         values = []
         for key, item in value.items():
@@ -3112,9 +3168,7 @@ def _sensitive_argument_values(value: Any, *, sensitive_parent: bool = False) ->
                     re.I,
                 )
             )
-            values.extend(
-                _sensitive_argument_values(item, sensitive_parent=sensitive)
-            )
+            values.extend(_sensitive_argument_values(item, sensitive_parent=sensitive))
         return values
     if isinstance(value, list):
         return [
@@ -3180,9 +3234,7 @@ def _local_image_input_error(
         result = messages_by_call_id.get(call.get("id"), "")
         if "Media capture was declined" in result:
             continue
-        if not re.search(
-            r"(?:camera|workspace|video)-image:[0-9a-f]{32}", result
-        ):
+        if not re.search(r"(?:camera|workspace|video)-image:[0-9a-f]{32}", result):
             return result or "The local image tool returned no result."
     return None
 
@@ -3255,7 +3307,11 @@ async def execute_tool_call(
     max_output_chars: int = MAX_TOOL_OUTPUT_CHARS,
 ) -> ToolMessage:
     tool_started = time.monotonic()
-    name, args, call_id = tool_call.get("name"), tool_call.get("args", {}), tool_call.get("id")
+    name, args, call_id = (
+        tool_call.get("name"),
+        tool_call.get("args", {}),
+        tool_call.get("id"),
+    )
     safe_args = _redact_tool_arguments(args)
     log_event(
         RUN_LOGGER,
@@ -3274,11 +3330,15 @@ async def execute_tool_call(
             "Error: Local media tools are available only in an explicitly "
             "selected local-model session."
         )
-    elif name in {
-        "capture_webcam_image",
-        "load_workspace_image",
-        "load_workspace_video",
-    } and not vision_supported:
+    elif (
+        name
+        in {
+            "capture_webcam_image",
+            "load_workspace_image",
+            "load_workspace_video",
+        }
+        and not vision_supported
+    ):
         result = (
             "Error: Image input is unavailable because this model does not "
             "declare vision support."
@@ -3292,7 +3352,8 @@ async def execute_tool_call(
     elif _local_location_refusal(name, args, local_media_allowed):
         result = _local_location_refusal(name, args, local_media_allowed)
     elif name in NETWORK_TOOL_NAMES and (
-        not ENABLE_WEB_RESEARCH or WEB_RESEARCH_CONSENT == "never"
+        not ENABLE_WEB_RESEARCH
+        or WEB_RESEARCH_CONSENT == "never"
         or not network_authorized
     ):
         result = "Error: Network tool call was not authorized; no request was made."
@@ -3306,19 +3367,29 @@ async def execute_tool_call(
             if name == "delete_chat_history_entry_from_sqlite":
                 entry_id = args.get("entry_id")
                 scope = args.get("session_id", "")
-                approval = console.input(
-                    f"[red]Delete the reviewed SQLite history entry {entry_id} "
-                    f"from session '{scope}'? Type 'delete {entry_id}' to confirm: [/red]"
-                ).strip().lower()
+                approval = (
+                    console.input(
+                        f"[red]Delete the reviewed SQLite history entry {entry_id} "
+                        f"from session '{scope}'? Type 'delete {entry_id}' to confirm: [/red]"
+                    )
+                    .strip()
+                    .lower()
+                )
                 confirmed = approval == f"delete {entry_id}"
             else:
                 scope = args.get("session_id") or "all sessions"
-                approval = console.input(
-                    f"[red]Type 'delete' to delete chat history for {scope}: [/red]"
-                ).strip().lower()
+                approval = (
+                    console.input(
+                        f"[red]Type 'delete' to delete chat history for {scope}: [/red]"
+                    )
+                    .strip()
+                    .lower()
+                )
                 confirmed = approval == "delete"
             if not confirmed:
-                result = "Error: Chat history deletion was declined; no data was removed."
+                result = (
+                    "Error: Chat history deletion was declined; no data was removed."
+                )
             else:
                 with approved_tool_invocation():
                     result = await asyncio.to_thread(tool_func.invoke, args)
@@ -3326,17 +3397,19 @@ async def execute_tool_call(
         name,
         permission_mode,
         network_authorized=network_authorized,
-    ) and not (
-        name in LOCAL_MEDIA_TOOL_NAMES and media_capture_authorized
-    ):
+    ) and not (name in LOCAL_MEDIA_TOOL_NAMES and media_capture_authorized):
         if not sys.stdin.isatty():
             result = "Error: This tool requires interactive approval and was not run."
         else:
             description = getattr(tool_func, "description", "") if tool_func else ""
-            approval = console.input(
-                f"[yellow]Approve tool '{name}'? {description}\n"
-                f"Arguments: {safe_args}\nRun? \\[y/N]: [/yellow]"
-            ).strip().lower()
+            approval = (
+                console.input(
+                    f"[yellow]Approve tool '{name}'? {description}\n"
+                    f"Arguments: {safe_args}\nRun? \\[y/N]: [/yellow]"
+                )
+                .strip()
+                .lower()
+            )
             if approval != "y":
                 result = "Error: Tool invocation was declined; no action was taken."
             else:
@@ -3409,8 +3482,7 @@ async def execute_tool_call(
             available = max(0, max_output_chars - len(reflection_suffix))
             if available >= len(truncation_note):
                 result_text = (
-                    result_text[: available - len(truncation_note)]
-                    + truncation_note
+                    result_text[: available - len(truncation_note)] + truncation_note
                 )
             else:
                 result_text = result_text[:available]
@@ -3561,8 +3633,7 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
             if folder is not None:
                 discovered.append(f"{label}: {folder}")
         console.print(
-            "[green][Project folders][/green] Auto-detected "
-            + " | ".join(discovered)
+            "[green][Project folders][/green] Auto-detected " + " | ".join(discovered)
         )
 
     local_runtimes = _discover_available_local_runtimes()
@@ -3675,10 +3746,7 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
             )
     set_active_db_path(DEFAULT_DB_PATH)
     for server_name, server_config in MCP_SERVERS.items():
-        if (
-            server_config.get("transport", "stdio") == "stdio"
-            and isolation_warning
-        ):
+        if server_config.get("transport", "stdio") == "stdio" and isolation_warning:
             console.print(
                 f"[yellow][MCP warning] Skipping stdio server '{server_name}': "
                 f"{isolation_warning}[/yellow]"
@@ -3768,11 +3836,14 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
             vectorstore = initialize_knowledge_base(
                 docs_input if docs_input else None,
                 index_path=RAG_INDEX_PATH,
-                confirm_rebuild=lambda detail: console.input(
-                    f"[yellow]RAG index state is damaged: {detail}\n"
-                    "Preserve the existing index as a timestamped backup and rebuild? "
-                    "Type REBUILD to confirm: [/yellow]"
-                ).strip() == "REBUILD",
+                confirm_rebuild=lambda detail: (
+                    console.input(
+                        f"[yellow]RAG index state is damaged: {detail}\n"
+                        "Preserve the existing index as a timestamped backup and rebuild? "
+                        "Type REBUILD to confirm: [/yellow]"
+                    ).strip()
+                    == "REBUILD"
+                ),
             )
     except Exception as exc:
         vectorstore = None
@@ -3800,8 +3871,7 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
         )
         if rag_init_elapsed >= 2:
             console.print(
-                f"[dim][Completed][/dim] RAG initialization in "
-                f"{rag_init_elapsed:.1f}s."
+                f"[dim][Completed][/dim] RAG initialization in {rag_init_elapsed:.1f}s."
             )
     is_rag_active = vectorstore is not None
     rag_signature = knowledge_base_signature(docs_input) if vectorstore else None
@@ -3827,12 +3897,18 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
             skill_days=REGISTERED_SKILL_RETENTION_DAYS,
             skills_directory=skills_folder_input or None,
         )
-    loaded_skills = load_skills_from_folder(skills_folder_input) if skills_folder_input else {}
+    loaded_skills = (
+        load_skills_from_folder(skills_folder_input) if skills_folder_input else {}
+    )
     set_active_skill_runtime(skills_folder_input or None, loaded_skills)
     if loaded_skills and verbose_startup:
-        console.print(f"[bold green][Skills Loaded][/bold green] Successfully loaded {len(loaded_skills)} markdown skill profile(s).")
+        console.print(
+            f"[bold green][Skills Loaded][/bold green] Successfully loaded {len(loaded_skills)} markdown skill profile(s)."
+        )
     elif not loaded_skills and verbose_startup:
-        console.print("[yellow][Skills Mode][/yellow] No skills folder specified or found. Running in plain agent mode.")
+        console.print(
+            "[yellow][Skills Mode][/yellow] No skills folder specified or found. Running in plain agent mode."
+        )
 
     has_skills = len(loaded_skills) > 0
     if has_skills and is_rag_active:
@@ -3878,10 +3954,18 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
 
     latest_session_id = memory.get_latest_session_id()
     if latest_session_id and sys.stdin.isatty():
-        resume = console.input(
-            f"[cyan]Resume latest session '{latest_session_id}'? \\[Y/n]: [/cyan]"
-        ).strip().lower()
-        session_id = latest_session_id if resume in {"", "y", "yes"} else f"session_{uuid.uuid4().hex}"
+        resume = (
+            console.input(
+                f"[cyan]Resume latest session '{latest_session_id}'? \\[Y/n]: [/cyan]"
+            )
+            .strip()
+            .lower()
+        )
+        session_id = (
+            latest_session_id
+            if resume in {"", "y", "yes"}
+            else f"session_{uuid.uuid4().hex}"
+        )
     else:
         session_id = f"session_{uuid.uuid4().hex}"
     set_active_skill_session(session_id)
@@ -3898,9 +3982,7 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
     thinking_effort = THINKING_EFFORT_DEFAULT
     permission_mode = _select_permission_mode()
     if verbose_startup:
-        console.print(
-            f"[cyan][Agent Permission Mode][/cyan] {permission_mode.title()}"
-        )
+        console.print(f"[cyan][Agent Permission Mode][/cyan] {permission_mode.title()}")
 
     online_selection: Optional[dict] = None
     online_preference: Optional[bool] = None
@@ -3960,11 +4042,7 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
             or default_choice
         )
         selected_online_option = next(
-            (
-                option
-                for option in online_options
-                if provider_choice == str(option[0])
-            ),
+            (option for option in online_options if provider_choice == str(option[0])),
             None,
         )
         if selected_online_option is not None:
@@ -3990,8 +4068,10 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
             )
             if not online_selection["share_context"] and not ONLINE_PERMISSION_OVERRIDE:
                 tools_list = [
-                    tool for tool in tools_list
-                    if tool.name not in {
+                    tool
+                    for tool in tools_list
+                    if tool.name
+                    not in {
                         "create_task_plan",
                         "inspect_task_plan",
                         "update_todo_step",
@@ -4016,7 +4096,9 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                     f"[green][Online model][/green] {selected_model} at "
                     f"{online_selection['base_url']}"
                 )
-        elif provider_choice.isdigit() and 1 <= int(provider_choice) <= len(local_runtimes):
+        elif provider_choice.isdigit() and 1 <= int(provider_choice) <= len(
+            local_runtimes
+        ):
             local_runtime = local_runtimes[int(provider_choice) - 1]
             selected_local_runtime = local_runtime
             provider_type = "local"
@@ -4061,7 +4143,9 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                     pass
                 console.print("[red][Error] Invalid selection.[/red]")
 
-            console.print(f"[green][Info] Initializing local model client for: {selected_model}[/green]")
+            console.print(
+                f"[green][Info] Initializing local model client for: {selected_model}[/green]"
+            )
             if local_runtime.kind == "ollama":
                 capabilities = inspect_model_capabilities(selected_model)
             else:
@@ -4132,7 +4216,8 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                                 candidate
                                 for candidate in available_models
                                 if candidate != selected_model
-                                and inspect_model_capabilities(candidate)["tools"] is True
+                                and inspect_model_capabilities(candidate)["tools"]
+                                is True
                             ),
                             None,
                         )
@@ -4146,7 +4231,9 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                         )
                         llm_with_tools = llm
                     else:
-                        console.print(f"[yellow][Model fallback] Switching to tool-capable model {fallback_model}.[/yellow]")
+                        console.print(
+                            f"[yellow][Model fallback] Switching to tool-capable model {fallback_model}.[/yellow]"
+                        )
                         selected_model = fallback_model
                         capabilities = inspect_model_capabilities(selected_model)
                         llm = _make_selected_local_chat_model(
@@ -4165,9 +4252,7 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                 model=selected_model,
             )
         else:
-            console.print(
-                f"[red]Select a provider from 1 to {last_choice}.[/red]"
-            )
+            console.print(f"[red]Select a provider from 1 to {last_choice}.[/red]")
             continue
         if provider_type == "local":
             webcam_status = (
@@ -4193,7 +4278,7 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                     "[yellow][Local media][/yellow] "
                     f"{webcam_status}; optional media packages missing "
                     f"({', '.join(missing_media)}); install with "
-                    "`pip install \".[media]\"`. Workspace PCM WAV transcription "
+                    '`pip install ".[media]"`. Workspace PCM WAV transcription '
                     "is local-only and requires per-use approval."
                 )
             elif capabilities["vision"] is not True:
@@ -4286,9 +4371,7 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
             and selected_local_runtime is not None
             and selected_local_runtime.kind == "ollama"
         ):
-            hardware_info = hardware_status_by_url.get(
-                selected_local_runtime.base_url
-            )
+            hardware_info = hardware_status_by_url.get(selected_local_runtime.base_url)
             if hardware_info is None:
                 hardware_info = inspect_ollama_hardware(
                     selected_local_runtime.base_url,
@@ -4297,16 +4380,14 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                         **kwargs, **ollama_client_kwargs()
                     ),
                 )
-                hardware_status_by_url[selected_local_runtime.base_url] = (
-                    hardware_info
-                )
+                hardware_status_by_url[selected_local_runtime.base_url] = hardware_info
             hardware_value = str(hardware_info.get("placement", "unknown"))
             reported_models = hardware_info.get("models")
             if isinstance(reported_models, list) and reported_models:
                 loaded_models = ", ".join(
                     str(model.get("name") or "unnamed model")
                     + (
-                        f" ({model['size_vram'] / (1024 ** 3):.2f} GiB VRAM)"
+                        f" ({model['size_vram'] / (1024**3):.2f} GiB VRAM)"
                         if isinstance(model, dict)
                         and isinstance(model.get("size_vram"), int)
                         else " (VRAM unknown)"
@@ -4318,7 +4399,9 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                     hardware_value += f" — {loaded_models}"
             startup_summary.add_row("Ollama hardware", hardware_value)
         console.print(startup_summary)
-        console.print(f"\n[bold green]--- {mode_label} Ready! Type 'exit' or 'switch' ---[/bold green]")
+        console.print(
+            f"\n[bold green]--- {mode_label} Ready! Type 'exit' or 'switch' ---[/bold green]"
+        )
 
         model_selection_failed = False
         active_code_workspace: Optional[CodeTaskWorkspace] = None
@@ -4471,8 +4554,10 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                     )
                     console.print(table)
                     continue
-                if user_input.lower() == "/add" or user_input.lower().startswith("/add "):
-                    folder_argument = user_input[len("/add"):].strip()
+                if user_input.lower() == "/add" or user_input.lower().startswith(
+                    "/add "
+                ):
+                    folder_argument = user_input[len("/add") :].strip()
                     if not folder_argument:
                         console.print(
                             "[yellow][Context][/yellow] Usage: "
@@ -4487,9 +4572,7 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                         ) = include_folder_context(folder_argument)
                         pending_folder_context_bytes = folder_context_bytes
                     except (OSError, ValueError) as exc:
-                        console.print(
-                            f"[red][Folder context error] {exc}[/red]"
-                        )
+                        console.print(f"[red][Folder context error] {exc}[/red]")
                         continue
                     console.print(
                         "[green][Context][/green] Added "
@@ -4519,11 +4602,10 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                         "tools will be available."
                     )
                     continue
-                if (
-                    user_input.lower() == "/skills"
-                    or user_input.lower().startswith("/skills ")
+                if user_input.lower() == "/skills" or user_input.lower().startswith(
+                    "/skills "
                 ):
-                    requested_skill = user_input[len("/skills"):].strip()
+                    requested_skill = user_input[len("/skills") :].strip()
                     if not requested_skill:
                         if not loaded_skills:
                             console.print(
@@ -4656,13 +4738,21 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                             thinking_effort=thinking_effort,
                             capabilities=capabilities,
                         )
-                        llm_with_tools = llm.bind_tools(tools_list) if capabilities["tools"] is not False else llm
-                        console.print(f"[cyan]Thinking: {'on' if thinking_enabled else 'off'}[/cyan]")
+                        llm_with_tools = (
+                            llm.bind_tools(tools_list)
+                            if capabilities["tools"] is not False
+                            else llm
+                        )
+                        console.print(
+                            f"[cyan]Thinking: {'on' if thinking_enabled else 'off'}[/cyan]"
+                        )
                     continue
                 if user_input.lower().startswith("/think-effort"):
                     parts = user_input.lower().split()
                     if len(parts) != 2 or parts[1] not in {"low", "medium", "high"}:
-                        console.print("[yellow]Usage: /think-effort low|medium|high[/yellow]")
+                        console.print(
+                            "[yellow]Usage: /think-effort low|medium|high[/yellow]"
+                        )
                         continue
                     thinking_effort = parts[1]
                     if capabilities["thinking"] is not True:
@@ -4678,10 +4768,16 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                             thinking_effort=thinking_effort,
                             capabilities=capabilities,
                         )
-                        llm_with_tools = llm.bind_tools(tools_list) if capabilities["tools"] is not False else llm
+                        llm_with_tools = (
+                            llm.bind_tools(tools_list)
+                            if capabilities["tools"] is not False
+                            else llm
+                        )
                     continue
                 if user_input.lower() == "/think-status":
-                    effective_thinking = thinking_enabled and capabilities["thinking"] is True
+                    effective_thinking = (
+                        thinking_enabled and capabilities["thinking"] is True
+                    )
                     console.print(
                         f"[cyan]Model: {selected_model}; thinking: "
                         f"{'on' if effective_thinking else 'off'}; requested: "
@@ -4707,8 +4803,7 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                             + format_hardware_status(hardware_info)
                         )
                     elif (
-                        provider_type == "local"
-                        and selected_local_runtime is not None
+                        provider_type == "local" and selected_local_runtime is not None
                     ):
                         console.print(
                             f"[cyan][Hardware Status][/cyan] "
@@ -4802,8 +4897,7 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                     if ENABLE_WEB_RESEARCH:
                         planner_names.add("web_search")
                     tools_list = [
-                        tool for tool in base_tools_list
-                        if tool.name in planner_names
+                        tool for tool in base_tools_list if tool.name in planner_names
                     ]
                     if not tools_list:
                         console.print(
@@ -4821,7 +4915,9 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                         )
                         tools_list = list(base_tools_list)
                         continue
-                elif active_code_workspace is None and capabilities["tools"] is not False:
+                elif (
+                    active_code_workspace is None and capabilities["tools"] is not False
+                ):
                     tools_list = list(base_tools_list)
                     try:
                         llm_with_tools = llm.bind_tools(tools_list)
@@ -4876,7 +4972,10 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                             f"execution is disabled on this host: {isolation_warning}"
                         )
                         continue
-                    if provider_type == "online" and not online_selection["allow_tools"]:
+                    if (
+                        provider_type == "online"
+                        and not online_selection["allow_tools"]
+                    ):
                         console.print(
                             "[red]This online session has local tool access disabled. "
                             "Select Local or explicitly enable tools in a new Online session "
@@ -4926,9 +5025,7 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                             CODE_OUTPUT_ROOT,
                             source_path=source_path,
                             direct_source=not _coding_uses_isolated_copy(access_level),
-                            allow_network=_coding_allows_command_network(
-                                access_level
-                            ),
+                            allow_network=_coding_allows_command_network(access_level),
                         )
                     except Exception as exc:
                         try:
@@ -4980,14 +5077,16 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                     AVAILABLE_TOOLS["checkpoint_code_task"] = checkpoint_code_task
                     AVAILABLE_TOOLS["finalize_code_task"] = finalize_code_task
                     tools_by_name = {tool.name: tool for tool in base_tools_list}
-                    tools_by_name.update({
-                        tool.name: tool
-                        for tool in (
-                            run_project_unit_tests,
-                            checkpoint_code_task,
-                            finalize_code_task,
-                        )
-                    })
+                    tools_by_name.update(
+                        {
+                            tool.name: tool
+                            for tool in (
+                                run_project_unit_tests,
+                                checkpoint_code_task,
+                                finalize_code_task,
+                            )
+                        }
+                    )
                     tools_list = list(tools_by_name.values())
 
                     try:
@@ -5209,7 +5308,9 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
                                 f"{d.page_content}"
                                 for d in relevant_docs
                             )
-                            console.print(f"[cyan][RAG State][/cyan] Retrieved {len(relevant_docs)} document/episodic chunks.")
+                            console.print(
+                                f"[cyan][RAG State][/cyan] Retrieved {len(relevant_docs)} document/episodic chunks."
+                            )
                     except Exception as exc:
                         reference_id = uuid.uuid4().hex[:8]
                         console.print(
@@ -5238,9 +5339,7 @@ async def _run_agent_cli_session(*, verbose_startup: bool = False):
 
                 if attached_file_context:
                     context_text = "\n\n".join(
-                        part
-                        for part in (context_text, attached_file_context)
-                        if part
+                        part for part in (context_text, attached_file_context) if part
                     )
                 context_label = (
                     "[Local memory, knowledge, and explicitly attached file context]"
@@ -5289,9 +5388,7 @@ Create or update a relevant unit-test file in this project. Before each subtask 
 
                     active_task_id = _task_state.ACTIVE_TASK_ID
                     active_task = (
-                        memory.get_task(active_task_id)
-                        if active_task_id
-                        else None
+                        memory.get_task(active_task_id) if active_task_id else None
                     )
                     if (
                         active_task
@@ -5327,8 +5424,7 @@ Create or update a relevant unit-test file in this project. Before each subtask 
                 tool_limits_instruction = (
                     f"At most {tool_iteration_limit} tool rounds and "
                     f"{tool_call_limit} tool calls. "
-                    if tool_iteration_limit is not None
-                    and tool_call_limit is not None
+                    if tool_iteration_limit is not None and tool_call_limit is not None
                     else "Tool rounds and total tool-call count are uncapped. "
                 )
                 system_prompt = f"""{SYSTEM_PROMPT}
@@ -5348,7 +5444,9 @@ Runtime context:
 {code_task_instructions}"""
                 system_prompts = [SystemMessage(content=system_prompt)]
                 if active_skill:
-                    system_prompts.append(SystemMessage(content=active_skill.system_prompt))
+                    system_prompts.append(
+                        SystemMessage(content=active_skill.system_prompt)
+                    )
 
                 effective_context = (
                     _effective_context_window(capabilities)
@@ -5443,20 +5541,25 @@ Runtime context:
                             "tools are not supported",
                         )
                     )
-                    fallback_model = next(
-                        (
-                            candidate
-                            for candidate in available_models
-                            if candidate != selected_model
-                            and inspect_model_capabilities(candidate)["tools"] is True
-                        ),
-                        None,
-                    ) if (
-                        tool_unsupported
-                        and provider_type == "local"
-                        and selected_local_runtime is not None
-                        and selected_local_runtime.kind == "ollama"
-                    ) else None
+                    fallback_model = (
+                        next(
+                            (
+                                candidate
+                                for candidate in available_models
+                                if candidate != selected_model
+                                and inspect_model_capabilities(candidate)["tools"]
+                                is True
+                            ),
+                            None,
+                        )
+                        if (
+                            tool_unsupported
+                            and provider_type == "local"
+                            and selected_local_runtime is not None
+                            and selected_local_runtime.kind == "ollama"
+                        )
+                        else None
+                    )
                     if fallback_model is None:
                         if provider_type == "online":
                             raise RuntimeError(_online_request_failure(e)) from None
@@ -5486,8 +5589,7 @@ Runtime context:
                 iteration = 0
                 tool_call_count = 0
                 while getattr(response, "tool_calls", None) and (
-                    tool_iteration_limit is None
-                    or iteration < tool_iteration_limit
+                    tool_iteration_limit is None or iteration < tool_iteration_limit
                 ):
                     iteration += 1
                     if (
@@ -5535,16 +5637,12 @@ Runtime context:
                                 )
                             )
                             continue
-                        if (
-                            schema_read_in_batch
-                            and call_name
-                            in {
-                                "create_task_plan",
-                                "revise_task_plan",
-                                "update_todo_step",
-                                "create_skill",
-                            }
-                        ):
+                        if schema_read_in_batch and call_name in {
+                            "create_task_plan",
+                            "revise_task_plan",
+                            "update_todo_step",
+                            "create_skill",
+                        }:
                             blocked_tool_messages.append(
                                 ToolMessage(
                                     content=(
@@ -5580,7 +5678,9 @@ Runtime context:
                             )
                             continue
                         tool_call_count += 1
-                        _SESSION_STATS.record_tool_call(str(tool_call.get("name") or "unknown"))
+                        _SESSION_STATS.record_tool_call(
+                            str(tool_call.get("name") or "unknown")
+                        )
                         network_authorized = False
                         media_capture_authorized = False
                         if planning_only:
@@ -5597,7 +5697,10 @@ Runtime context:
                                 )
                                 continue
                             planning_tool_seen = True
-                        if call_name in {"create_task_plan", "revise_task_plan"} and not planning_only:
+                        if (
+                            call_name in {"create_task_plan", "revise_task_plan"}
+                            and not planning_only
+                        ):
                             blocked_tool_messages.append(
                                 ToolMessage(
                                     content=(
@@ -5692,12 +5795,19 @@ Runtime context:
                             continue
                         if call_name in NETWORK_TOOL_NAMES:
                             tool_args = tool_call.get("args", {})
-                            planning_search = planning_only and call_name == "web_search"
-                            network_authorized, refusal = await authorize_network_research(
+                            planning_search = (
+                                planning_only and call_name == "web_search"
+                            )
+                            (
+                                network_authorized,
+                                refusal,
+                            ) = await authorize_network_research(
                                 call_name,
                                 tool_args,
                                 permission_mode=(
-                                    "manual" if planning_search else turn_permission_mode
+                                    "manual"
+                                    if planning_search
+                                    else turn_permission_mode
                                 ),
                                 session_consent_state=network_consent_state,
                             )
@@ -5727,9 +5837,11 @@ Runtime context:
                         }:
                             prior_references = []
                             if call_name == "revise_task_plan":
-                                active_plan = memory.get_task(
-                                    _task_state.ACTIVE_TASK_ID
-                                ) if _task_state.ACTIVE_TASK_ID else None
+                                active_plan = (
+                                    memory.get_task(_task_state.ACTIVE_TASK_ID)
+                                    if _task_state.ACTIVE_TASK_ID
+                                    else None
+                                )
                                 if active_plan:
                                     prior_references = active_plan["plan"].get(
                                         "research_references",
@@ -5776,8 +5888,10 @@ Runtime context:
                                 )
                                 for call in response.tool_calls
                                 if call.get("name") not in NETWORK_TOOL_NAMES
-                                or call.get("id") not in {
-                                    message.tool_call_id for message in blocked_tool_messages
+                                or call.get("id")
+                                not in {
+                                    message.tool_call_id
+                                    for message in blocked_tool_messages
                                 }
                             ]
                         else:
@@ -5799,7 +5913,8 @@ Runtime context:
                                         "call_id": str(call.get("id") or ""),
                                     }
                                     for call in response.tool_calls
-                                    if call.get("id") not in {
+                                    if call.get("id")
+                                    not in {
                                         message.tool_call_id
                                         for message in blocked_tool_messages
                                     }
@@ -5821,13 +5936,13 @@ Runtime context:
                                         tool_call_id=call.get("id"),
                                     )
                                     for call in response.tool_calls
-                                    if call.get("id") not in {
-                                        message.tool_call_id for message in blocked_tool_messages
+                                    if call.get("id")
+                                    not in {
+                                        message.tool_call_id
+                                        for message in blocked_tool_messages
                                     }
                                 ]
-                            tool_batch_elapsed = (
-                                time.monotonic() - tool_batch_started
-                            )
+                            tool_batch_elapsed = time.monotonic() - tool_batch_started
                             if tool_batch_elapsed >= 2:
                                 console.print(
                                     f"[dim][Completed][/dim] Tool actions in "
@@ -5853,7 +5968,10 @@ Runtime context:
                                 )
                     if planning_only and authorized_planning_searches:
                         for tool_result in tool_messages:
-                            if tool_result.tool_call_id not in authorized_planning_searches:
+                            if (
+                                tool_result.tool_call_id
+                                not in authorized_planning_searches
+                            ):
                                 continue
                             result_text = _visible_chunk_text(tool_result.content)
                             if result_text.casefold().startswith(
@@ -5940,7 +6058,9 @@ Runtime context:
                                 "Online model failed after tool execution. "
                                 + _online_request_failure(exc)
                             ) from None
-                        raise RuntimeError(f"Model failed after tool execution: {exc}") from exc
+                        raise RuntimeError(
+                            f"Model failed after tool execution: {exc}"
+                        ) from exc
 
                 if getattr(response, "tool_calls", None):
                     messages.append(response)
@@ -6021,7 +6141,9 @@ Runtime context:
                         highlight=False,
                         soft_wrap=True,
                     )
-                elif not full_output_content and not getattr(response, "tool_calls", None):
+                elif not full_output_content and not getattr(
+                    response, "tool_calls", None
+                ):
                     console.print(
                         "[yellow]The model returned no visible response text.[/yellow]"
                     )
@@ -6029,12 +6151,18 @@ Runtime context:
                     console.print("[bold cyan][Retrieved Sources][/bold cyan]")
                     for citation in retrieved_citations:
                         console.print(f"  - {citation}")
-                console.print(f"[dim green][Latency] Turn completed in {elapsed_time:.2f}s.[/dim green]")
+                console.print(
+                    f"[dim green][Latency] Turn completed in {elapsed_time:.2f}s.[/dim green]"
+                )
 
                 if active_code_workspace is not None:
                     verification = cleanup_code_task(finalize=True)
-                    console.print(f"[cyan][Code Task Verification][/cyan] {verification}")
-                    full_output_content += f"\n\n[Code task verification]\n{verification}"
+                    console.print(
+                        f"[cyan][Code Task Verification][/cyan] {verification}"
+                    )
+                    full_output_content += (
+                        f"\n\n[Code task verification]\n{verification}"
+                    )
 
                 memory.save_message(session_id, "human", user_input)
                 memory.save_message(session_id, "ai", full_output_content)
@@ -6072,7 +6200,9 @@ Runtime context:
                 exc_info=True,
             )
             console.print(f"\n[red][Exception] {str(rte)}[/red]")
-            console.print("[red][Action Required] Review the error and local model/tool configuration.[/red]\n")
+            console.print(
+                "[red][Action Required] Review the error and local model/tool configuration.[/red]\n"
+            )
             continue
         except Exception as ex:
             cleanup_code_task(finalize=False)
@@ -6085,7 +6215,9 @@ Runtime context:
                 error_type=type(ex).__name__,
                 exc_info=True,
             )
-            console.print(f"\n[red][Exception] Unexpected runtime error: {str(ex)}[/red]\n")
+            console.print(
+                f"\n[red][Exception] Unexpected runtime error: {str(ex)}[/red]\n"
+            )
             continue
 
         if model_selection_failed:
@@ -6141,22 +6273,26 @@ async def _summarize_and_save_session(
             "sentences when that fits. Preserve key meaning rather "
             "than truncating text."
         )
-        summary_messages = [
-            SystemMessage(
-                content=(
-                    "Prepare one meaning-preserving episodic "
-                    "summary value that fits the SQLite destination. "
-                    "Schema metadata and limits:\n"
-                    + json.dumps(
-                        {
-                            "schema": summary_schema,
-                            "application_limit_characters": summary_limit,
-                        },
-                        ensure_ascii=False,
+        summary_messages = (
+            [
+                SystemMessage(
+                    content=(
+                        "Prepare one meaning-preserving episodic "
+                        "summary value that fits the SQLite destination. "
+                        "Schema metadata and limits:\n"
+                        + json.dumps(
+                            {
+                                "schema": summary_schema,
+                                "application_limit_characters": summary_limit,
+                            },
+                            ensure_ascii=False,
+                        )
                     )
                 )
-            )
-        ] + chat_history + [HumanMessage(content=summary_prompt)]
+            ]
+            + chat_history
+            + [HumanMessage(content=summary_prompt)]
+        )
         console_obj.print(
             "[cyan][Summary 2/3][/cyan] Model is summarizing the session..."
         )
@@ -6167,27 +6303,25 @@ async def _summarize_and_save_session(
         )
         summary_text = str(summary_res.content).strip()
         if len(summary_text) > summary_limit:
-            shorten_messages = (
-                [
-                    SystemMessage(
-                        content=(
-                            "Semantically summarize the provided "
-                            "candidate for the exact SQLite schema "
-                            "budget below. Do not slice or merely "
-                            "remove its ending. Return only the "
-                            "revised summary value.\n"
-                            + json.dumps(
-                                {
-                                    "schema": summary_schema,
-                                    "maximum_characters": summary_limit,
-                                },
-                                ensure_ascii=False,
-                            )
+            shorten_messages = [
+                SystemMessage(
+                    content=(
+                        "Semantically summarize the provided "
+                        "candidate for the exact SQLite schema "
+                        "budget below. Do not slice or merely "
+                        "remove its ending. Return only the "
+                        "revised summary value.\n"
+                        + json.dumps(
+                            {
+                                "schema": summary_schema,
+                                "maximum_characters": summary_limit,
+                            },
+                            ensure_ascii=False,
                         )
-                    ),
-                    HumanMessage(content=summary_text),
-                ]
-            )
+                    )
+                ),
+                HumanMessage(content=summary_text),
+            ]
             call_started = time.monotonic()
             summary_res = await llm.ainvoke(shorten_messages)
             _SESSION_STATS.record_model_call(
@@ -6207,9 +6341,7 @@ async def _summarize_and_save_session(
         )
         return True
     except (KeyboardInterrupt, asyncio.CancelledError):
-        console_obj.print(
-            "[yellow][Summary] Skipped; no summary was saved.[/yellow]"
-        )
+        console_obj.print("[yellow][Summary] Skipped; no summary was saved.[/yellow]")
     except Exception as exc:
         log_event(
             RUN_LOGGER,
@@ -6284,7 +6416,9 @@ async def run_agent_cli_async(*, verbose_startup: bool = False):
                     error_type=type(exc).__name__,
                     exc_info=True,
                 )
-                console.print(f"[yellow][Shutdown warning] Could not close SQLite memory: {exc}[/yellow]")
+                console.print(
+                    f"[yellow][Shutdown warning] Could not close SQLite memory: {exc}[/yellow]"
+                )
             finally:
                 _ACTIVE_MEMORY = None
         for tool_name in set(MCP_TOOL_NAMES) - original_mcp_tools:

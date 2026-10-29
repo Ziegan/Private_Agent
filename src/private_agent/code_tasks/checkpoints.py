@@ -28,7 +28,8 @@ def commit_paths(
     if not requested:
         return "Error: Provide the changed project paths to include in the checkpoint."
     invalid = [
-        path for path in requested
+        path
+        for path in requested
         if Path(path).is_absolute()
         or ".." in Path(path).parts
         or path not in candidates
@@ -49,7 +50,8 @@ def commit_paths(
             return "Error: No unit-test file exists. Add or update a test before checkpointing."
         tracked = run_git(workspace.root, "ls-files", "-z")
         tracked_test_paths = {
-            path for path in tracked.stdout.split("\0")
+            path
+            for path in tracked.stdout.split("\0")
             if path and _TEST_FILE.search(path)
         }
         if not requested.intersection(test_paths | tracked_test_paths):
@@ -59,7 +61,9 @@ def commit_paths(
             )
         test_result = workspace._run_tests()
         if not test_result.startswith("Tests passed:"):
-            return f"Error: Checkpoint blocked because tests did not pass.\n{test_result}"
+            return (
+                f"Error: Checkpoint blocked because tests did not pass.\n{test_result}"
+            )
 
     if any(_is_likely_secret(path) for path in requested):
         return "Error: Refusing to commit a likely secret file."
@@ -69,7 +73,11 @@ def commit_paths(
         return f"Error staging files: {add.stderr.strip()}"
     staged = run_git(workspace.root, "diff", "--cached", "--name-only", "-z")
     staged_paths = {path for path in staged.stdout.split("\0") if path}
-    if staged.returncode != 0 or not staged_paths or not staged_paths.issubset(requested):
+    if (
+        staged.returncode != 0
+        or not staged_paths
+        or not staged_paths.issubset(requested)
+    ):
         return "Error: Staged paths do not match the requested checkpoint file list."
     staged_diff = run_git(workspace.root, "diff", "--cached", "--check")
     if staged_diff.returncode != 0:
@@ -86,7 +94,9 @@ def commit_paths(
         return f"Error creating local checkpoint: {commit.stderr.strip()}"
     commit_id = run_git(workspace.root, "rev-parse", "HEAD")
     if commit_id.returncode != 0:
-        return "Error: Commit command succeeded but its commit ID could not be verified."
+        return (
+            "Error: Commit command succeeded but its commit ID could not be verified."
+        )
     remotes = run_git(workspace.root, "remote")
     if remotes.returncode != 0 or remotes.stdout.strip():
         return "Error: Checkpoint exists, but unexpected remote configuration was detected."

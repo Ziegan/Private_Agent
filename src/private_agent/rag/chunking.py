@@ -115,7 +115,7 @@ def _unit_window_split(text: str, size: int, overlap: int, unit: str) -> List[st
     start = 0
     while start < len(spans):
         end = min(start + size, len(spans))
-        chunk = text[spans[start][0]:spans[end - 1][1]].strip()
+        chunk = text[spans[start][0] : spans[end - 1][1]].strip()
         if chunk:
             chunks.append(chunk)
         if end >= len(spans):
@@ -182,7 +182,7 @@ def _split_sentences(text: str) -> List[str]:
     sentences: List[str] = []
     position = 0
     for match in _SENTENCE_RE.finditer(text):
-        sentence = text[position:match.start() + len(match.group().rstrip())]
+        sentence = text[position : match.start() + len(match.group().rstrip())]
         if sentence.strip():
             sentences.append(sentence.strip())
         position = match.end()
@@ -202,7 +202,7 @@ def _recursive_split(
         if separator and separator in text:
             split_parts = text.split(separator)
             parts = [part + separator for part in split_parts[:-1]] + split_parts[-1:]
-            remaining = separators[index + 1:]
+            remaining = separators[index + 1 :]
             pieces: List[str] = []
             for part in parts:
                 if _size(part, settings.unit) > settings.chunk_size:
@@ -232,7 +232,9 @@ def _split_markdown(text: str, settings: ChunkingSettings) -> List[str]:
                 buffer = ""
             heading = section.split("\n", 1)[0].strip()
             for part in _recursive_split(section, settings, settings.separators):
-                chunks.append(part if part.startswith(heading) else f"{heading}\n{part}")
+                chunks.append(
+                    part if part.startswith(heading) else f"{heading}\n{part}"
+                )
         elif buffer and _size(buffer + section, settings.unit) > settings.chunk_size:
             chunks.append(buffer.strip())
             buffer = section
@@ -288,7 +290,7 @@ def _split_semantic(
         return _pack(sentences, settings, " ")
     buffer = settings.semantic_buffer_sentences
     windows = [
-        " ".join(sentences[max(0, i - buffer):i + buffer + 1])
+        " ".join(sentences[max(0, i - buffer) : i + buffer + 1])
         for i in range(len(sentences))
     ]
     try:
@@ -391,4 +393,6 @@ def split_text(
         chunks = _split_code(text, settings)
     else:
         chunks = _split_semantic(text, settings, embed)
-    return _merge_small([chunk for chunk in chunks if chunk.strip()], settings.min_chunk_chars)
+    return _merge_small(
+        [chunk for chunk in chunks if chunk.strip()], settings.min_chunk_chars
+    )

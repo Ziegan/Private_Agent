@@ -10,12 +10,14 @@ import pytest
 from private_agent.tools import (
     run_shell_command,
 )
+
 try:
     from private_agent.agent import get_robust_chat_model
 except ImportError:
     # Fallback definition if not explicitly exposed in private_agent.agent
     def get_robust_chat_model(primary_model_name, fallback_model_name, tools=None):
         from langchain_ollama import ChatOllama
+
         try:
             model = ChatOllama(model=primary_model_name)
             if tools:
@@ -27,6 +29,7 @@ except ImportError:
                 model = model.bind_tools(tools)
             return model
 
+
 from private_agent.code_tasks import (
     CodeTaskWorkspace,
     is_code_task_request,
@@ -35,11 +38,13 @@ from private_agent.code_tasks import (
 
 console = Console()
 
+
 def test_code_task_request_detection_requires_code_intent():
     assert is_code_task_request("Create a Python application with a unit test")
     assert is_code_task_request("Please fix the bug in this script")
     assert not is_code_task_request("Explain how Python applications work")
     assert not is_code_task_request("Research local database options")
+
 
 def test_code_workspace_isolated_git_and_test_gated_checkpoint(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
@@ -56,13 +61,16 @@ def test_code_workspace_isolated_git_and_test_gated_checkpoint(tmp_path, monkeyp
     assert workspace is not None
     assert workspace.git_enabled
     assert workspace.root.parent == (tmp_path / "projects")
-    assert pathlib.Path(
-        subprocess.check_output(
-            ["git", "rev-parse", "--show-toplevel"],
-            cwd=workspace.root,
-            text=True,
-        ).strip()
-    ) == workspace.root
+    assert (
+        pathlib.Path(
+            subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"],
+                cwd=workspace.root,
+                text=True,
+            ).strip()
+        )
+        == workspace.root
+    )
     assert not subprocess.check_output(
         ["git", "remote"],
         cwd=workspace.root,
@@ -102,6 +110,7 @@ def test_code_workspace_isolated_git_and_test_gated_checkpoint(tmp_path, monkeyp
         text=True,
     ).strip()
 
+
 def test_code_workspace_without_git_requires_confirmation(tmp_path, monkeypatch):
     from private_agent import code_tasks
 
@@ -122,6 +131,7 @@ def test_code_workspace_without_git_requires_confirmation(tmp_path, monkeypatch)
     assert approved is not None
     assert approved.git_enabled is False
     assert not (approved.root / ".git").exists()
+
 
 def test_git_initialization_failure_requires_confirmation_and_removes_partial_repo(
     tmp_path,
@@ -148,7 +158,10 @@ def test_git_initialization_failure_requires_confirmation_and_removes_partial_re
     assert not workspace.git_enabled
     assert not (workspace.root / ".git").exists()
 
-def test_existing_code_workspace_copy_excludes_git_secrets_and_caches(tmp_path, monkeypatch):
+
+def test_existing_code_workspace_copy_excludes_git_secrets_and_caches(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "Private Agent Test")
@@ -228,9 +241,7 @@ def test_code_workspace_copy_failure_preserves_source_and_removes_destination(
     assert list(output_root.iterdir()) == []
 
 
-def test_code_workspace_removes_symlinks_added_during_copy(
-    tmp_path, monkeypatch
-):
+def test_code_workspace_removes_symlinks_added_during_copy(tmp_path, monkeypatch):
     from private_agent import code_tasks
 
     source = tmp_path / "source"
@@ -272,8 +283,9 @@ def test_code_task_blocks_manual_git_shell_commands(monkeypatch):
     from private_agent import code_tasks
 
     monkeypatch.setattr(code_tasks, "ACTIVE_CODE_TASK", object())
-    with patch("private_agent.tools.shell.sys.stdin", MagicMock(isatty=lambda: True)), patch(
-        "private_agent.tools.shell.console.input", return_value="y"
+    with (
+        patch("private_agent.tools.shell.sys.stdin", MagicMock(isatty=lambda: True)),
+        patch("private_agent.tools.shell.console.input", return_value="y"),
     ):
         result = run_shell_command.invoke({"command": "git status"})
     assert "manual Git commands are disabled" in result
@@ -343,10 +355,7 @@ def test_isolation_readiness_reports_platform_without_raising(
         lambda name: f"/usr/bin/{name}" if name in available_tools else None,
     )
 
-    assert (
-        code_tasks.isolation_unavailable_reason()
-        == expected
-    )
+    assert code_tasks.isolation_unavailable_reason() == expected
 
 
 def test_isolated_command_shares_network_only_when_explicitly_enabled(
@@ -420,7 +429,9 @@ def test_generated_project_test_command_isolated_from_host_files(tmp_path):
             command, capture_output=True, text=True, timeout=20, env=environment
         )
         assert result.returncode == 0, result.stderr
-        assert (project / "allowed.txt").read_text(encoding="utf-8") == "workspace is writable"
+        assert (project / "allowed.txt").read_text(
+            encoding="utf-8"
+        ) == "workspace is writable"
         assert not host_write.exists()
         network_command, network_environment = _isolated_command(
             [
@@ -446,6 +457,7 @@ def test_generated_project_test_command_isolated_from_host_files(tmp_path):
     finally:
         host_listener.close()
 
+
 def test_project_runner_runs_all_detected_suites_after_failure(tmp_path, monkeypatch):
     import private_agent.code_tasks as code_tasks
 
@@ -459,16 +471,24 @@ def test_project_runner_runs_all_detected_suites_after_failure(tmp_path, monkeyp
     )
     workspace = CodeTaskWorkspace(project, "project", False)
     commands = []
-    outcomes = iter([
-        subprocess.CompletedProcess([], 1, "", "python suite failed"),
-        subprocess.CompletedProcess([], 0, "npm suite passed", ""),
-    ])
-    monkeypatch.setattr(code_tasks, "_isolated_command", lambda command, root, **_kwargs: (
-        commands.append(list(command)) or list(command),
-        {"PATH": "/usr/bin"},
-    ))
+    outcomes = iter(
+        [
+            subprocess.CompletedProcess([], 1, "", "python suite failed"),
+            subprocess.CompletedProcess([], 0, "npm suite passed", ""),
+        ]
+    )
+    monkeypatch.setattr(
+        code_tasks,
+        "_isolated_command",
+        lambda command, root, **_kwargs: (
+            commands.append(list(command)) or list(command),
+            {"PATH": "/usr/bin"},
+        ),
+    )
     monkeypatch.setattr(code_tasks.shutil, "which", lambda binary: f"/usr/bin/{binary}")
-    monkeypatch.setattr(code_tasks.subprocess, "run", lambda *args, **kwargs: next(outcomes))
+    monkeypatch.setattr(
+        code_tasks.subprocess, "run", lambda *args, **kwargs: next(outcomes)
+    )
 
     result = workspace.run_tests()
     assert commands == [
@@ -478,6 +498,7 @@ def test_project_runner_runs_all_detected_suites_after_failure(tmp_path, monkeyp
     assert "python suite failed" in result
     assert "Passed: npm test" in result
     assert not result.startswith("Tests passed:")
+
 
 def test_project_runner_rejects_ignored_test_files(tmp_path):
     project = tmp_path / "project"
@@ -489,6 +510,7 @@ def test_project_runner_rejects_ignored_test_files(tmp_path):
     )
     workspace = CodeTaskWorkspace(project, "project", True)
     assert "No unit-test file found" in workspace.run_tests()
+
 
 def test_project_runner_reports_missing_runner_and_timeout(tmp_path, monkeypatch):
     import private_agent.code_tasks as code_tasks
@@ -643,9 +665,7 @@ def test_checkpoint_surfaces_git_status_failure(tmp_path):
 
     def fail_status(root, *args):
         assert args[:2] == ("status", "--porcelain")
-        return subprocess.CompletedProcess(
-            ["git", *args], 1, "", "status unavailable"
-        )
+        return subprocess.CompletedProcess(["git", *args], 1, "", "status unavailable")
 
     result = checkpoints.commit_paths(
         workspace,
@@ -662,7 +682,10 @@ def test_checkpoint_surfaces_git_status_failure(tmp_path):
     ("failure_stage", "expected"),
     [
         ("add", "Error staging files: staging refused"),
-        ("head", "Error: Commit command succeeded but its commit ID could not be verified."),
+        (
+            "head",
+            "Error: Commit command succeeded but its commit ID could not be verified.",
+        ),
     ],
 )
 def test_checkpoint_surfaces_staging_and_post_commit_verification_failures(
@@ -685,9 +708,7 @@ def test_checkpoint_surfaces_staging_and_post_commit_verification_failures(
 
     def fake_git(root, *args):
         if args[:1] == ("add",):
-            code, error = (
-                (1, "staging refused") if failure_stage == "add" else (0, "")
-            )
+            code, error = (1, "staging refused") if failure_stage == "add" else (0, "")
             return subprocess.CompletedProcess(["git", *args], code, "", error)
         if args[:2] == ("diff", "--cached"):
             if args[2:] == ("--name-only", "-z"):
@@ -776,7 +797,10 @@ def test_finalize_surfaces_git_status_and_staged_diff_failures(
 def test_autonomous_error_reflection_simulation():
     tool_error_result = "Error: File 'nonexistent.py' not found."
     if "error" in tool_error_result.lower() or "traceback" in tool_error_result.lower():
-        reflection_feedback = tool_error_result + "\n[System Reflection Prompt]: Your execution encountered an error/traceback. Analyze why it failed, correct your approach, and try again."
-    
+        reflection_feedback = (
+            tool_error_result
+            + "\n[System Reflection Prompt]: Your execution encountered an error/traceback. Analyze why it failed, correct your approach, and try again."
+        )
+
     assert "[System Reflection Prompt]" in reflection_feedback
     assert "Error: File 'nonexistent.py' not found." in reflection_feedback

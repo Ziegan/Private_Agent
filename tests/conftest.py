@@ -29,6 +29,8 @@ _TEST_CATEGORIES = {
     "test_skills": "Skills",
     "test_tools": "Tools",
 }
+
+
 def _test_category(nodeid):
     module = nodeid.split("::", 1)[0]
     name = pathlib.Path(module).stem
@@ -83,9 +85,7 @@ def pytest_terminal_summary(terminalreporter):
         )
 
     failures = sorted(
-        nodeid
-        for nodeid, result in completed.items()
-        if result["outcome"] == "failed"
+        nodeid for nodeid, result in completed.items() if result["outcome"] == "failed"
     )
     if failures:
         terminalreporter.write_sep("!", "Failed tests")

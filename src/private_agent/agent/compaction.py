@@ -16,8 +16,11 @@ def message_text(message: Any) -> str:
     content = getattr(message, "content", "")
     if isinstance(content, list):
         return "".join(
-            item if isinstance(item, str) else str(item.get("text", ""))
-            if isinstance(item, dict) else str(item)
+            item
+            if isinstance(item, str)
+            else str(item.get("text", ""))
+            if isinstance(item, dict)
+            else str(item)
             for item in content
         )
     return str(content or "")
@@ -66,7 +69,7 @@ def _transcript(messages: List[Any], token_limit: int = _MAX_SOURCE_TOKENS) -> s
     text = "\n".join(lines)
     if token_count(text) <= token_limit:
         return text
-    return _truncate_to_tokens(text[-token_limit * 4:], token_limit)
+    return _truncate_to_tokens(text[-token_limit * 4 :], token_limit)
 
 
 def needs_history_compaction(
@@ -97,7 +100,7 @@ async def compact_history(
     keep = 0 if keep_recent <= 0 else max(2, keep_recent - keep_recent % 2)
     if keep and len(history) <= keep:
         keep = max(0, len(history) - 2)
-    older, recent = history[: len(history) - keep], history[len(history) - keep:]
+    older, recent = history[: len(history) - keep], history[len(history) - keep :]
     if not older:
         return history, summary
     if notify:
@@ -107,7 +110,11 @@ async def compact_history(
         )
     try:
         new_summary = await _summarize(
-            llm, summary, _transcript(older, source_token_limit), max_chars, "earlier conversation"
+            llm,
+            summary,
+            _transcript(older, source_token_limit),
+            max_chars,
+            "earlier conversation",
         )
     except Exception as exc:
         if notify:
@@ -117,7 +124,9 @@ async def compact_history(
             )
         return recent, summary
     if notify:
-        notify(f"Context summary updated; {len(recent)} recent message(s) kept verbatim.")
+        notify(
+            f"Context summary updated; {len(recent)} recent message(s) kept verbatim."
+        )
     return recent, new_summary
 
 
@@ -155,8 +164,10 @@ async def compact_loop_messages(
         default=-1,
     )
     older = [
-        m for i, m in enumerate(messages)
-        if isinstance(m, ToolMessage) and i < last_call
+        m
+        for i, m in enumerate(messages)
+        if isinstance(m, ToolMessage)
+        and i < last_call
         and not message_text(m).startswith("[Condensed")
     ]
     changed = False
@@ -175,7 +186,9 @@ async def compact_loop_messages(
         except Exception as exc:
             digest = _truncate_to_tokens(transcript, max(50, limit_tokens // 10))
             if notify:
-                notify(f"Tool-result summary failed ({type(exc).__name__}); truncated instead.")
+                notify(
+                    f"Tool-result summary failed ({type(exc).__name__}); truncated instead."
+                )
         for position, message in enumerate(older):
             message.content = (
                 f"[Condensed tool results] {digest}"
@@ -187,7 +200,8 @@ async def compact_loop_messages(
     overflow = messages_tokens(messages) - int(threshold * limit_tokens)
     if overflow > 0:
         newest = [
-            m for i, m in enumerate(messages)
+            m
+            for i, m in enumerate(messages)
             if isinstance(m, ToolMessage) and i > last_call
         ]
         for message in newest:

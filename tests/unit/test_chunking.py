@@ -1,12 +1,19 @@
 import pytest
 
-from private_agent.rag.chunking import _TOKEN_RE, STRATEGIES, ChunkingSettings, split_text
+from private_agent.rag.chunking import (
+    _TOKEN_RE,
+    STRATEGIES,
+    ChunkingSettings,
+    split_text,
+)
 
 PROSE = " ".join(f"Sentence number {i} talks about topic {i % 3}." for i in range(60))
 
 
 def settings(strategy, size=200, overlap=40, **kwargs):
-    return ChunkingSettings(strategy=strategy, chunk_size=size, chunk_overlap=overlap, **kwargs)
+    return ChunkingSettings(
+        strategy=strategy, chunk_size=size, chunk_overlap=overlap, **kwargs
+    )
 
 
 @pytest.mark.parametrize("strategy", [s for s in STRATEGIES if s != "semantic"])
@@ -41,7 +48,11 @@ def test_unit_words_applies_to_sentence_packing():
 
 def test_paragraph_and_line_keep_boundaries():
     text = "alpha one\n\nbeta two\n\ngamma three"
-    assert split_text(text, settings("paragraph", 12, 0)) == ["alpha one", "beta two", "gamma three"]
+    assert split_text(text, settings("paragraph", 12, 0)) == [
+        "alpha one",
+        "beta two",
+        "gamma three",
+    ]
     assert split_text("l1\nl2\nl3", settings("line", 5, 0)) == ["l1\nl2", "l3"]
 
 
@@ -83,7 +94,13 @@ def test_semantic_splits_at_topic_shift_and_traces_fallback(monkeypatch):
     def embed(texts):
         return [[1.0, 0.0] if i < 4 else [0.0, 1.0] for i in range(len(texts))]
 
-    s = settings("semantic", 500, 0, semantic_buffer_sentences=0, semantic_breakpoint_percentile=80)
+    s = settings(
+        "semantic",
+        500,
+        0,
+        semantic_buffer_sentences=0,
+        semantic_breakpoint_percentile=80,
+    )
     chunks = split_text(text, s, embed=embed)
     assert len(chunks) == 2 and "Cats" in chunks[0] and "Stocks" in chunks[1]
 

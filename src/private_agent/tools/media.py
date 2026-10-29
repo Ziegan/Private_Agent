@@ -106,7 +106,11 @@ def list_microphone_devices() -> str:
             for index, device in enumerate(devices)
             if device["max_input_channels"] > 0
         ]
-        return "\n".join(available) if available else "No microphone input devices were found."
+        return (
+            "\n".join(available)
+            if available
+            else "No microphone input devices were found."
+        )
     except Exception as exc:
         return f"Could not list microphone devices ({type(exc).__name__}): {exc}"
 
@@ -148,7 +152,7 @@ def consume_captured_image(reference: str) -> Optional[bytes]:
     )
     if prefix is None:
         return None
-    return _captured_images.pop(reference[len(prefix):], None)
+    return _captured_images.pop(reference[len(prefix) :], None)
 
 
 def clear_captured_images() -> None:
@@ -163,17 +167,14 @@ def approve_local_capture(tool_name: str, args: dict) -> bool:
     if not __import__("sys").stdin.isatty():
         return False
     if tool_name == "record_microphone_audio":
-        details = (
-            f"for {float(args.get('duration_seconds', DEFAULT_MICROPHONE_SECONDS)):.1f} seconds"
-        )
+        details = f"for {float(args.get('duration_seconds', DEFAULT_MICROPHONE_SECONDS)):.1f} seconds"
     elif tool_name == "capture_webcam_image":
         details = f"from camera device {args.get('device_index', 0)}"
     elif tool_name == "load_workspace_video":
         details = f"from workspace video '{escape(str(args.get('file_path', '')))}'"
     elif tool_name == "transcribe_workspace_audio":
         details = (
-            f"from workspace audio file "
-            f"'{escape(str(args.get('file_path', '')))}'"
+            f"from workspace audio file '{escape(str(args.get('file_path', '')))}'"
         )
     else:
         details = f"from workspace file '{escape(str(args.get('file_path', '')))}'"
@@ -194,11 +195,7 @@ def _normalize_video_frame(cv2, frame) -> Optional[bytes]:
     if frame is None or getattr(frame, "ndim", 0) < 2:
         return None
     height, width = frame.shape[:2]
-    if (
-        height < 1
-        or width < 1
-        or height * width > MAX_DECODED_IMAGE_PIXELS
-    ):
+    if height < 1 or width < 1 or height * width > MAX_DECODED_IMAGE_PIXELS:
         return None
     scale = min(1.0, MAX_IMAGE_WIDTH / width, MAX_IMAGE_HEIGHT / height)
     if scale < 1.0:
@@ -229,7 +226,12 @@ def load_workspace_video(file_path: str) -> str:
             "`python -m pip install '.[media]'`."
         )
     if os.path.splitext(file_path)[1].lower() not in {
-        ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"
+        ".mp4",
+        ".mov",
+        ".m4v",
+        ".avi",
+        ".mkv",
+        ".webm",
     }:
         return "Error: Workspace video must use a supported video file extension."
     capture = None
@@ -238,9 +240,7 @@ def load_workspace_video(file_path: str) -> str:
         if not target.is_file():
             return "Error: Workspace video path is not a regular file."
         if target.stat().st_size > MAX_MEDIA_FILE_BYTES:
-            return (
-                f"Error: Video exceeds the {MAX_MEDIA_FILE_BYTES}-byte safety limit."
-            )
+            return f"Error: Video exceeds the {MAX_MEDIA_FILE_BYTES}-byte safety limit."
         capture = cv2.VideoCapture(str(target))
         if not capture.isOpened():
             return "Error: Workspace video could not be opened."
@@ -304,12 +304,9 @@ def load_workspace_video(file_path: str) -> str:
                 references.append((timestamp, reference))
         if not references:
             return "Error: No bounded video frames could be decoded and normalized."
-        return (
-            "Sampled local video frames in memory (not saved): "
-            + "; ".join(
-                f"{timestamp:.1f}s video-image:{reference}"
-                for timestamp, reference in references
-            )
+        return "Sampled local video frames in memory (not saved): " + "; ".join(
+            f"{timestamp:.1f}s video-image:{reference}"
+            for timestamp, reference in references
         )
     except (OSError, ValueError) as exc:
         return f"Error loading workspace video: {exc}"
@@ -331,7 +328,9 @@ def _load_local_whisper_model():
         )
     model_path = os.path.abspath(os.path.expanduser(model_path))
     if not os.path.isdir(model_path):
-        raise ValueError("Configured local Whisper model path is not an existing directory.")
+        raise ValueError(
+            "Configured local Whisper model path is not an existing directory."
+        )
     try:
         import faster_whisper
     except ImportError as exc:
@@ -365,15 +364,11 @@ def transcribe_workspace_audio(file_path: str) -> str:
         if not target.is_file():
             return "Error: Workspace audio path is not a regular file."
         if target.stat().st_size > MAX_MEDIA_FILE_BYTES:
-            return (
-                f"Error: Audio file exceeds the {MAX_MEDIA_FILE_BYTES}-byte safety limit."
-            )
+            return f"Error: Audio file exceeds the {MAX_MEDIA_FILE_BYTES}-byte safety limit."
         with target.open("rb") as source:
             audio_bytes = source.read(MAX_MEDIA_FILE_BYTES + 1)
         if len(audio_bytes) > MAX_MEDIA_FILE_BYTES:
-            return (
-                f"Error: Audio file exceeds the {MAX_MEDIA_FILE_BYTES}-byte safety limit."
-            )
+            return f"Error: Audio file exceeds the {MAX_MEDIA_FILE_BYTES}-byte safety limit."
         with io.BytesIO(audio_bytes) as audio_file:
             try:
                 with wave.open(audio_file, "rb") as wav_file:
@@ -476,7 +471,13 @@ def load_workspace_image(file_path: str) -> str:
         )
 
     if os.path.splitext(file_path)[1].lower() not in {
-        ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".bmp",
+        ".tif",
+        ".tiff",
     }:
         return "Error: Workspace image must use a supported image file extension."
 

@@ -14,7 +14,13 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, BaseMessage
+from langchain_core.messages import (
+    HumanMessage,
+    AIMessage,
+    SystemMessage,
+    ToolMessage,
+    BaseMessage,
+)
 from ..config import (
     DEFAULT_DB_PATH,
     DEFAULT_EPISODIC_SUMMARIES,
@@ -44,7 +50,11 @@ class PersistentMemory:
     }
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH):
-        self.db_path = str(pathlib.Path(db_path).expanduser()) if db_path != ":memory:" else db_path
+        self.db_path = (
+            str(pathlib.Path(db_path).expanduser())
+            if db_path != ":memory:"
+            else db_path
+        )
         self._lock = threading.Lock()
         if self.db_path != ":memory:":
             pathlib.Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -76,7 +86,9 @@ class PersistentMemory:
             raise
 
     @classmethod
-    def describe_table_schema(cls, connection: sqlite3.Connection, table_name: str) -> dict:
+    def describe_table_schema(
+        cls, connection: sqlite3.Connection, table_name: str
+    ) -> dict:
         """Describe an allowlisted application table without exposing SQL execution."""
         if table_name not in cls.SCHEMA_TABLE_ALLOWLIST:
             raise ValueError("Schema inspection is limited to approved agent tables.")
@@ -86,15 +98,11 @@ class PersistentMemory:
         ).fetchone()
         if table is None:
             raise ValueError(f"Approved table {table_name!r} does not exist.")
-        columns = connection.execute(
-            f'PRAGMA table_info("{table_name}")'
-        ).fetchall()
+        columns = connection.execute(f'PRAGMA table_info("{table_name}")').fetchall()
         foreign_keys = connection.execute(
             f'PRAGMA foreign_key_list("{table_name}")'
         ).fetchall()
-        indexes = connection.execute(
-            f'PRAGMA index_list("{table_name}")'
-        ).fetchall()
+        indexes = connection.execute(f'PRAGMA index_list("{table_name}")').fetchall()
         index_details = []
         for index in indexes:
             index_name = str(index[1]).replace('"', '""')
@@ -512,14 +520,18 @@ class PersistentMemory:
         try:
             plan = json.loads(plan_json)
         except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
-            _LOGGER.warning("Skipping malformed structured episode plan id=%s", episode_id)
+            _LOGGER.warning(
+                "Skipping malformed structured episode plan id=%s", episode_id
+            )
             return None
         if (
             not isinstance(plan, dict)
             or not isinstance(plan.get("steps"), list)
             or any(not isinstance(step, dict) for step in plan["steps"])
         ):
-            _LOGGER.warning("Skipping invalid structured episode plan id=%s", episode_id)
+            _LOGGER.warning(
+                "Skipping invalid structured episode plan id=%s", episode_id
+            )
             return None
         return plan
 
@@ -643,11 +655,14 @@ class PersistentMemory:
         if unresolved:
             next_safe_action = "Reconcile unresolved tool actions before continuing."
         elif task[2] != "active":
-            next_safe_action = "Review the saved task and obtain approval before execution."
+            next_safe_action = (
+                "Review the saved task and obtain approval before execution."
+            )
         else:
             next_step = next(
                 (
-                    row for row in step_rows
+                    row
+                    for row in step_rows
                     if row[1] in {"in_progress", "pending", "blocked"}
                 ),
                 None,
@@ -807,12 +822,12 @@ class PersistentMemory:
         if len({step["step_id"] for step in normalized}) != len(normalized):
             raise ValueError("Plan step IDs must be unique.")
         step_ids = {step["step_id"] for step in normalized}
-        dependencies = {
-            step["step_id"]: step["dependencies"] for step in normalized
-        }
+        dependencies = {step["step_id"]: step["dependencies"] for step in normalized}
         for step in normalized:
             if step["step_id"] in step["dependencies"]:
-                raise ValueError(f"Plan step {step['step_id']} cannot depend on itself.")
+                raise ValueError(
+                    f"Plan step {step['step_id']} cannot depend on itself."
+                )
             missing = set(step["dependencies"]) - step_ids
             if missing:
                 raise ValueError(
@@ -1104,9 +1119,7 @@ class PersistentMemory:
                 f"Saved task plan {task_id} revision {revision} is missing."
             )
         plan_data = self._decode_task_plan(plan[1], task_id, revision)
-        step_details = {
-            item["step_id"]: item for item in plan_data.get("steps", [])
-        }
+        step_details = {item["step_id"]: item for item in plan_data.get("steps", [])}
         return {
             "task_id": task[0],
             "session_id": task[1],
@@ -1490,11 +1503,7 @@ class PersistentMemory:
                     "WHERE task_id = ?",
                     (action[0],),
                 ).fetchone()
-                if (
-                    lease
-                    and lease[1] > time.time()
-                    and lease[0] != owner_id
-                ):
+                if lease and lease[1] > time.time() and lease[0] != owner_id:
                     raise ValueError(
                         "Action reconciliation blocked: another process still "
                         "holds the active task lease."
@@ -1607,11 +1616,7 @@ class PersistentMemory:
                         "WHERE task_id = ?",
                         (task_id,),
                     ).fetchone()
-                    if (
-                        not lease
-                        or lease[0] != owner_id
-                        or lease[1] <= time.time()
-                    ):
+                    if not lease or lease[0] != owner_id or lease[1] <= time.time():
                         raise ValueError(
                             "Progress update blocked: this process does not hold "
                             "the active task lease."
@@ -1700,7 +1705,9 @@ class PersistentMemory:
                     (task_id,),
                 ).fetchone()
                 if task is None or task[0] != revision or task[1] != "active":
-                    raise ValueError("Only steps in the active revision can be verified.")
+                    raise ValueError(
+                        "Only steps in the active revision can be verified."
+                    )
                 lease = self.conn.execute(
                     "SELECT owner_id FROM agent_task_leases WHERE task_id = ?",
                     (task_id,),
@@ -1797,12 +1804,21 @@ class PersistentMemory:
             "awaiting_approval": {"active", "paused", "interrupted", "stale"},
             "stale": {"draft", "awaiting_approval", "active", "paused", "interrupted"},
             "cancelled": {
-                "draft", "awaiting_approval", "active", "paused",
-                "interrupted", "stale",
+                "draft",
+                "awaiting_approval",
+                "active",
+                "paused",
+                "interrupted",
+                "stale",
             },
             "abandoned": {
-                "draft", "awaiting_approval", "active", "paused",
-                "interrupted", "cancelled", "stale",
+                "draft",
+                "awaiting_approval",
+                "active",
+                "paused",
+                "interrupted",
+                "cancelled",
+                "stale",
             },
         }
         if status not in transitions:
@@ -1825,11 +1841,7 @@ class PersistentMemory:
                     "WHERE task_id = ?",
                     (task_id,),
                 ).fetchone()
-                if (
-                    lease
-                    and lease[1] > time.time()
-                    and lease[0] != owner_id
-                ):
+                if lease and lease[1] > time.time() and lease[0] != owner_id:
                     raise ValueError(
                         "Task transition blocked: another process still holds "
                         "the active task lease."
@@ -1922,9 +1934,7 @@ class PersistentMemory:
                 ).fetchall()
                 plan = json.loads(details[3])
                 plan_steps = {item["step_id"]: item for item in plan.get("steps", [])}
-                episode_topic = self._sanitize_episode_text(
-                    details[1].splitlines()[0]
-                )
+                episode_topic = self._sanitize_episode_text(details[1].splitlines()[0])
                 episode_description = (
                     f"Completed {details[2]} task: "
                     f"{sum(row[2] == 'verified' for row in verified_steps)} verified, "
@@ -2026,7 +2036,11 @@ class PersistentMemory:
 
     def rate_completed_task(self, task_id: str, rating: int) -> dict:
         """Persist subjective user feedback for a successfully completed task."""
-        if not isinstance(rating, int) or isinstance(rating, bool) or not 0 <= rating <= 5:
+        if (
+            not isinstance(rating, int)
+            or isinstance(rating, bool)
+            or not 0 <= rating <= 5
+        ):
             raise ValueError("Task completeness rating must be an integer from 0 to 5.")
         with self._lock:
             with self._write_transaction():
@@ -2081,7 +2095,9 @@ class PersistentMemory:
         scope = str(scope).strip().lower()
         provenance = str(provenance).strip()
         if scope not in {"global", "coding", "research", "other"}:
-            raise ValueError("Learning scope must be global, coding, research, or other.")
+            raise ValueError(
+                "Learning scope must be global, coding, research, or other."
+            )
         if not provenance or len(provenance) > 100:
             raise ValueError("Learning provenance must contain 1 to 100 characters.")
         item_id = uuid.uuid4().hex
@@ -2128,8 +2144,7 @@ class PersistentMemory:
         with self._lock:
             rows = self.conn.execute(query).fetchall()
         return [
-            item for row in rows
-            if (item := self.get_learned_item(row[0])) is not None
+            item for row in rows if (item := self.get_learned_item(row[0])) is not None
         ]
 
     def get_learned_item(self, item_id: str) -> Optional[dict]:
@@ -2154,12 +2169,12 @@ class PersistentMemory:
             "updated_at": row[7],
             "expires_at": row[8],
             "review_at": row[9],
-            "expired": bool(row[8] and row[8] <= datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )),
-            "review_due": bool(row[9] and row[9] <= datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )),
+            "expired": bool(
+                row[8] and row[8] <= datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ),
+            "review_due": bool(
+                row[9] and row[9] <= datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            ),
         }
 
     def update_learned_item(
@@ -2171,7 +2186,9 @@ class PersistentMemory:
         statement = self._validate_learned_statement(statement)
         scope = str(scope).strip().lower()
         if scope not in {"global", "coding", "research", "other"}:
-            raise ValueError("Learning scope must be global, coding, research, or other.")
+            raise ValueError(
+                "Learning scope must be global, coding, research, or other."
+            )
         with self._lock:
             with self._write_transaction():
                 cursor = self.conn.execute(
@@ -2259,8 +2276,7 @@ class PersistentMemory:
                 (task_type, limit),
             ).fetchall()
         return [
-            item for row in rows
-            if (item := self.get_learned_item(row[0])) is not None
+            item for row in rows if (item := self.get_learned_item(row[0])) is not None
         ]
 
     def save_message(self, session_id: str, role: str, content: str):
@@ -2268,7 +2284,7 @@ class PersistentMemory:
             with self.conn:
                 self.conn.execute(
                     "INSERT INTO chat_history (session_id, role, content) VALUES (?, ?, ?)",
-                    (session_id, role, content)
+                    (session_id, role, content),
                 )
 
     def get_history(
@@ -2281,15 +2297,15 @@ class PersistentMemory:
             if session_id:
                 cursor.execute(
                     "SELECT session_id, role, content, timestamp FROM chat_history WHERE session_id = ? AND role != 'summary' ORDER BY id DESC LIMIT ?",
-                    (session_id, limit)
+                    (session_id, limit),
                 )
             else:
                 cursor.execute(
                     "SELECT session_id, role, content, timestamp FROM chat_history WHERE role != 'summary' ORDER BY id DESC LIMIT ?",
-                    (limit,)
+                    (limit,),
                 )
             rows = cursor.fetchall()
-        
+
         messages = []
         for r in reversed(rows):
             role = r[1].lower()
@@ -2369,7 +2385,9 @@ class PersistentMemory:
                         "DELETE FROM agent_tasks WHERE originating_session_id = ?",
                         (session_id,),
                     )
-                    self.conn.execute("DELETE FROM chat_history WHERE session_id = ?", (session_id,))
+                    self.conn.execute(
+                        "DELETE FROM chat_history WHERE session_id = ?", (session_id,)
+                    )
                 else:
                     self.conn.execute("DELETE FROM agent_learned_items")
                     self.conn.execute("DELETE FROM agent_tasks")
@@ -2389,16 +2407,16 @@ class PersistentMemory:
             with self.conn:
                 self.conn.execute(
                     "INSERT INTO chat_history (session_id, role, content) VALUES (?, ?, ?)",
-                    (session_id, "summary", summary)
+                    (session_id, "summary", summary),
                 )
 
     def prune_history(self, retention_days: int) -> int:
         """Delete messages and derived summaries older than the retention window."""
         if retention_days <= 0:
             return 0
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat(
-            sep=" ", timespec="seconds"
-        )
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=retention_days)
+        ).isoformat(sep=" ", timespec="seconds")
         with self._lock:
             with self.conn:
                 cursor = self.conn.execute(
@@ -2422,7 +2440,12 @@ class PersistentMemory:
         deleted = {"conversation": 0, "episodes": 0, "skills": 0}
         skill_paths: list[str] = []
         resumable_statuses = (
-            "draft", "awaiting_approval", "active", "paused", "interrupted", "stale"
+            "draft",
+            "awaiting_approval",
+            "active",
+            "paused",
+            "interrupted",
+            "stale",
         )
         with self._lock:
             with self._write_transaction():
@@ -2566,13 +2589,37 @@ class PersistentMemory:
         """Return a small deterministic lexical match set from recent episodes."""
         limit = max(1, min(int(limit), 100))
         stop_words = {
-            "about", "after", "also", "and", "are", "for", "from", "have",
-            "into", "its", "make", "need", "that", "the", "this", "with",
-            "what", "when", "where", "which", "will", "would", "topic",
-            "task", "plan", "steps", "verified",
+            "about",
+            "after",
+            "also",
+            "and",
+            "are",
+            "for",
+            "from",
+            "have",
+            "into",
+            "its",
+            "make",
+            "need",
+            "that",
+            "the",
+            "this",
+            "with",
+            "what",
+            "when",
+            "where",
+            "which",
+            "will",
+            "would",
+            "topic",
+            "task",
+            "plan",
+            "steps",
+            "verified",
         }
         query_terms = {
-            term for term in re.findall(r"[a-z0-9]+", query.casefold())
+            term
+            for term in re.findall(r"[a-z0-9]+", query.casefold())
             if len(term) > 2 and term not in stop_words
         }
         if not query_terms:
@@ -2580,9 +2627,7 @@ class PersistentMemory:
         with self._lock:
             rows = None
             if self._episode_fts_enabled:
-                expression = " OR ".join(
-                    f'"{term}"' for term in sorted(query_terms)
-                )
+                expression = " OR ".join(f'"{term}"' for term in sorted(query_terms))
                 try:
                     rows = self.conn.execute(
                         "SELECT history.id, history.session_id, history.timestamp, "
@@ -2616,8 +2661,7 @@ class PersistentMemory:
         )
         for row in rows:
             searchable = " ".join(
-                str(value or "")
-                for value in (row[3], row[4], row[5], row[6])
+                str(value or "") for value in (row[3], row[4], row[5], row[6])
             ).casefold()
             episode_terms = set(re.findall(r"[a-z0-9]+", searchable))
             overlap = query_terms & episode_terms
@@ -2797,14 +2841,10 @@ class PersistentMemory:
                 raise sqlite3.DatabaseError(
                     f"SQLite integrity check failed: {integrity}"
                 )
-            pages_before = int(
-                self.conn.execute("PRAGMA page_count").fetchone()[0]
-            )
+            pages_before = int(self.conn.execute("PRAGMA page_count").fetchone()[0])
             self.conn.execute("PRAGMA optimize")
             self.conn.execute("VACUUM")
-            pages_after = int(
-                self.conn.execute("PRAGMA page_count").fetchone()[0]
-            )
+            pages_after = int(self.conn.execute("PRAGMA page_count").fetchone()[0])
         return {
             "integrity": integrity,
             "pages_before": pages_before,
@@ -2814,9 +2854,10 @@ class PersistentMemory:
     def backup_to(self, destination: str) -> str:
         """Write a consistent private backup without overwriting an existing file."""
         target = pathlib.Path(destination).expanduser().absolute()
-        if self.db_path != ":memory:" and target.resolve() == pathlib.Path(
-            self.db_path
-        ).resolve():
+        if (
+            self.db_path != ":memory:"
+            and target.resolve() == pathlib.Path(self.db_path).resolve()
+        ):
             raise ValueError("Backup destination must differ from the active database.")
         if target.exists():
             raise FileExistsError(f"Backup destination already exists: {target}")
@@ -2840,9 +2881,7 @@ class PersistentMemory:
                         "PRAGMA integrity_check"
                     ).fetchone()
                     if not result or result[0] != "ok":
-                        raise sqlite3.DatabaseError(
-                            "Backup integrity check failed."
-                        )
+                        raise sqlite3.DatabaseError("Backup integrity check failed.")
                 finally:
                     destination_connection.close()
             os.chmod(staged, 0o600)

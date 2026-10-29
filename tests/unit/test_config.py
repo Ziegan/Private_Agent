@@ -94,9 +94,10 @@ def test_custom_system_prompt_is_preserved_in_user_config(tmp_path, monkeypatch)
     settings = load_or_create_config()
 
     assert settings["agent"]["system_prompt"] == "Follow our project conventions."
-    assert json.loads(config_path.read_text(encoding="utf-8"))["agent"][
-        "system_prompt"
-    ] == "Follow our project conventions."
+    assert (
+        json.loads(config_path.read_text(encoding="utf-8"))["agent"]["system_prompt"]
+        == "Follow our project conventions."
+    )
 
 
 def test_empty_system_prompt_is_replaced_with_packaged_default():
@@ -110,12 +111,14 @@ def test_empty_system_prompt_is_replaced_with_packaged_default():
 def test_categorized_config_preserves_legacy_keys_and_prefers_category_values():
     import private_agent.config as config
 
-    merged = config._merge_config({
-        "max_tool_output_chars": 4096,
-        "agent": {"max_tool_output_chars": 2048},
-        "max_read_file_bytes": 4096,
-        "tools": {"max_read_file_bytes": 8192},
-    })
+    merged = config._merge_config(
+        {
+            "max_tool_output_chars": 4096,
+            "agent": {"max_tool_output_chars": 2048},
+            "max_read_file_bytes": 4096,
+            "tools": {"max_read_file_bytes": 8192},
+        }
+    )
 
     assert merged["agent"]["max_tool_output_chars"] == 2048
     assert merged["max_tool_output_chars"] == 2048
@@ -126,11 +129,13 @@ def test_categorized_config_preserves_legacy_keys_and_prefers_category_values():
 def test_categorized_config_maps_legacy_flat_settings():
     import private_agent.config as config
 
-    merged = config._merge_config({
-        "max_tool_output_chars": 4096,
-        "rag_max_file_bytes": 123456,
-        "DEBUG_LOG_ENABLED": 1,
-    })
+    merged = config._merge_config(
+        {
+            "max_tool_output_chars": 4096,
+            "rag_max_file_bytes": 123456,
+            "DEBUG_LOG_ENABLED": 1,
+        }
+    )
 
     assert merged["agent"]["max_tool_output_chars"] == 4096
     assert merged["rag"]["max_file_bytes"] == 123456
@@ -140,9 +145,7 @@ def test_categorized_config_maps_legacy_flat_settings():
 def test_categorized_online_api_key_has_legacy_runtime_alias():
     import private_agent.config as config
 
-    merged = config._merge_config(
-        {"models": {"online_api_key": "configured-test-key"}}
-    )
+    merged = config._merge_config({"models": {"online_api_key": "configured-test-key"}})
 
     assert merged["models"]["online_api_key"] == "configured-test-key"
     assert merged["online_api_key"] == "configured-test-key"
@@ -151,13 +154,15 @@ def test_categorized_online_api_key_has_legacy_runtime_alias():
 def test_merge_config_migrates_old_default_rag_and_skills_paths():
     import private_agent.config as config
 
-    merged = config._merge_config({
-        "paths": {
-            "skills": "resources/skills",
-            "rag_documents": None,
-            "rag_index": "./.local_ai_chroma_db",
+    merged = config._merge_config(
+        {
+            "paths": {
+                "skills": "resources/skills",
+                "rag_documents": None,
+                "rag_index": "./.local_ai_chroma_db",
+            }
         }
-    })
+    )
 
     assert merged["paths"] == {
         "skills": "~/.private_agent/resources/skills",
@@ -223,9 +228,10 @@ def test_visible_reasoning_configuration_defaults_off_and_accepts_legacy_name():
     import private_agent.config as config
 
     assert config.DEFAULT_CONFIG["agent"]["visible_reasoning"] is False
-    assert config._merge_config({"VISIBILE_REASONING": True})[
-        "agent"
-    ]["visible_reasoning"] is True
+    assert (
+        config._merge_config({"VISIBILE_REASONING": True})["agent"]["visible_reasoning"]
+        is True
+    )
 
 
 def test_loading_legacy_config_migrates_it_to_categorized_sections(
@@ -233,11 +239,13 @@ def test_loading_legacy_config_migrates_it_to_categorized_sections(
 ):
     config_path = tmp_path / ".private_agent.conf"
     config_path.write_text(
-        json.dumps({
-            "max_tool_output_chars": 4096,
-            "rag_max_file_bytes": 123456,
-            "DEBUG_LOG_ENABLED": 1,
-        }),
+        json.dumps(
+            {
+                "max_tool_output_chars": 4096,
+                "rag_max_file_bytes": 123456,
+                "DEBUG_LOG_ENABLED": 1,
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr("private_agent.config.CONFIG_FILE_PATH", config_path)
@@ -295,10 +303,7 @@ def test_logging_console_adapter_installs_and_restores_module_consoles():
     finally:
         run_logging.restore_logging_consoles(saved_consoles)
 
-    assert all(
-        module.console is original_consoles[module]
-        for module in modules
-    )
+    assert all(module.console is original_consoles[module] for module in modules)
 
 
 def test_debug_log_records_are_structured_and_console_content_is_not_logged(
@@ -350,11 +355,15 @@ def test_debug_log_records_are_structured_and_console_content_is_not_logged(
     timing = next(record for record in records if record["event"] == "timing.sample")
     assert timing["fields"] == {"first_token_seconds": 0.25, "input_tokens": 32}
 
-    failure = next(record for record in records if record["message"] == "operation failed")
+    failure = next(
+        record for record in records if record["message"] == "operation failed"
+    )
     assert failure["event"] == "log"
     assert failure["context"] == {"task_id": "task-42", "operation": "test"}
     assert failure["exception"]["type"] == "ValueError"
-    assert "ValueError: invalid password=[REDACTED]" in failure["exception"]["traceback"]
+    assert (
+        "ValueError: invalid password=[REDACTED]" in failure["exception"]["traceback"]
+    )
     assert "hunter2" not in json.dumps(records)
     assert "shown to user" not in json.dumps(records)
     assert "private prompt" not in json.dumps(records)
@@ -365,7 +374,9 @@ def test_debug_log_records_are_structured_and_console_content_is_not_logged(
     adapter._base.input.assert_called_once_with("private prompt")
 
 
-def test_debug_log_level_filters_and_terminal_stays_clean(tmp_path, monkeypatch, capsys):
+def test_debug_log_level_filters_and_terminal_stays_clean(
+    tmp_path, monkeypatch, capsys
+):
     import logging
 
     import private_agent.run_logging as run_logging
@@ -431,7 +442,9 @@ def test_structured_exception_traceback_redacts_sensitive_tool_values():
     assert "[REDACTED]" in parsed["exception"]["traceback"]
 
 
-def test_debug_logging_repeated_start_does_not_duplicate_handlers(tmp_path, monkeypatch):
+def test_debug_logging_repeated_start_does_not_duplicate_handlers(
+    tmp_path, monkeypatch
+):
     import json
 
     import private_agent.run_logging as run_logging
@@ -453,4 +466,6 @@ def test_debug_logging_repeated_start_does_not_duplicate_handlers(tmp_path, monk
         run_logging.stop_debug_logging()
     assert first_path != second_path
     assert len(first_records) == 1
-    assert sum(record["event"] == "test.single_record" for record in second_records) == 1
+    assert (
+        sum(record["event"] == "test.single_record" for record in second_records) == 1
+    )

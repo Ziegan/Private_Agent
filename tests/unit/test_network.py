@@ -26,12 +26,14 @@ from private_agent.agent import (
     _make_online_chat_model,
     select_online_model,
 )
+
 try:
     from private_agent.agent import get_robust_chat_model
 except ImportError:
     # Fallback definition if not explicitly exposed in private_agent.agent
     def get_robust_chat_model(primary_model_name, fallback_model_name, tools=None):
         from langchain_ollama import ChatOllama
+
         try:
             model = ChatOllama(model=primary_model_name)
             if tools:
@@ -105,6 +107,7 @@ def test_outbound_url_rejects_local_and_credentialed_destinations():
     ):
         with pytest.raises(ValueError):
             validate_outbound_url(url)
+
 
 def test_outbound_url_rejects_domains_resolving_to_private_addresses(monkeypatch):
     monkeypatch.setattr(
@@ -228,9 +231,7 @@ async def test_async_resolver_kills_and_reaps_child_on_cancellation(monkeypatch)
         AsyncMock(return_value=process),
     )
     task = asyncio.create_task(
-        network_tools._getaddrinfo_async_with_timeout(
-            "slow.example.test", 443, 5
-        )
+        network_tools._getaddrinfo_async_with_timeout("slow.example.test", 443, 5)
     )
     await asyncio.sleep(0)
     task.cancel()
@@ -239,6 +240,7 @@ async def test_async_resolver_kills_and_reaps_child_on_cancellation(monkeypatch)
         await task
 
     assert process.killed
+
 
 @pytest.mark.asyncio
 async def test_connect_backend_pins_validated_public_address(monkeypatch):
@@ -296,9 +298,10 @@ async def test_async_connect_timeout_budget_includes_dns(monkeypatch):
     monkeypatch.setattr(network_tools, "_getaddrinfo_async_with_timeout", resolve)
     monkeypatch.setattr(backend._backend, "connect_tcp", connect)
 
-    assert await backend.connect_tcp(
-        "public.example.test", 443, timeout=0.2
-    ) == "connected"
+    assert (
+        await backend.connect_tcp("public.example.test", 443, timeout=0.2)
+        == "connected"
+    )
     assert 0 < observed["timeout"] < 0.19
 
 
@@ -311,6 +314,7 @@ async def test_connect_backend_falls_back_from_unavailable_localhost_ipv6(monkey
         attempts.append(address)
         if address == "::1":
             import httpcore
+
             raise httpcore.ConnectError("IPv6 listener unavailable")
         return "connected"
 
@@ -324,6 +328,7 @@ async def test_connect_backend_falls_back_from_unavailable_localhost_ipv6(monkey
     )
     assert await backend.connect_tcp("localhost", 11434) == "connected"
     assert attempts == ["::1", "127.0.0.1"]
+
 
 @pytest.mark.asyncio
 async def test_connect_backend_rejects_mixed_public_private_dns(monkeypatch):
@@ -341,8 +346,11 @@ async def test_connect_backend_rejects_mixed_public_private_dns(monkeypatch):
         await backend.connect_tcp("mixed.example.test", 443)
     connect.assert_not_awaited()
 
+
 @pytest.mark.asyncio
-async def test_private_provider_transport_allows_only_explicit_private_literals(monkeypatch):
+async def test_private_provider_transport_allows_only_explicit_private_literals(
+    monkeypatch,
+):
     backend = _PublicOnlyNetworkBackend(allow_loopback=True)
     connect = AsyncMock(return_value="connected")
     monkeypatch.setattr(backend._backend, "connect_tcp", connect)
@@ -359,9 +367,7 @@ async def test_private_provider_transport_allows_only_explicit_private_literals(
     ):
         monkeypatch.setattr(
             "private_agent.tools.network._getaddrinfo_with_timeout",
-            lambda *args, address=resolved, **kwargs: [
-                (2, 1, 6, "", (address, 443))
-            ],
+            lambda *args, address=resolved, **kwargs: [(2, 1, 6, "", (address, 443))],
         )
         with pytest.raises(OSError, match="non-public"):
             await backend.connect_tcp(hostname, 443)
@@ -378,8 +384,7 @@ async def test_real_http_transport_blocks_private_dns_results(
         request_received.set()
         await reader.read(4096)
         writer.write(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n"
-            b"Connection: close\r\n\r\nok"
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
         )
         await writer.drain()
         writer.close()
@@ -477,6 +482,7 @@ async def test_http_redirect_to_local_network_is_rejected(monkeypatch):
         with pytest.raises(ValueError, match="non-public"):
             await _get_limited_response(client, "http://public.example.test/", 100)
 
+
 @pytest.mark.asyncio
 async def test_http_response_size_limit_is_enforced(monkeypatch):
     import httpx
@@ -492,6 +498,7 @@ async def test_http_response_size_limit_is_enforced(monkeypatch):
         with pytest.raises(ValueError, match="size limit"):
             await _get_limited_response(client, "http://public.example.test/", 4)
 
+
 @pytest.mark.asyncio
 async def test_http_total_timeout_releases_concurrency_slot(monkeypatch):
     import private_agent.tools as tools
@@ -504,9 +511,11 @@ async def test_http_total_timeout_releases_concurrency_slot(monkeypatch):
 
                 async def __aexit__(self, *args):
                     pass
+
             return SlowResponse()
 
     monkeypatch.setattr("private_agent.tools.network.NETWORK_REQUEST_TIMEOUT", 0.01)
+
     async def validate_url(url):
         return url
 
@@ -575,13 +584,16 @@ def test_failed_download_preserves_existing_destination(temp_workspace, monkeypa
         raise OSError("network dropped")
 
     monkeypatch.setattr("private_agent.tools.web._get_limited_response", fail_fetch)
-    result = download_web_file.invoke({
-        "url": "https://public.example.test/file.txt",
-        "save_path": "existing.txt",
-    })
+    result = download_web_file.invoke(
+        {
+            "url": "https://public.example.test/file.txt",
+            "save_path": "existing.txt",
+        }
+    )
     assert "network dropped" in result
     assert destination.read_text(encoding="utf-8") == "original"
     assert list(temp_workspace.glob(".existing.txt.*.part")) == []
+
 
 def test_online_api_url_normalizes_v1_and_requires_secure_remote_transport():
     assert _validate_online_base_url("https://api.example.test") == (
@@ -594,6 +606,7 @@ def test_online_api_url_normalizes_v1_and_requires_secure_remote_transport():
         _validate_online_base_url("http://api.example.test/v1")
     with pytest.raises(ValueError):
         _validate_online_base_url("https://user:secret@api.example.test/v1")
+
 
 @pytest.mark.parametrize(
     ("status_code", "expected"),
@@ -623,6 +636,7 @@ def test_online_request_failure_reports_status_without_response_secrets(
     assert expected in message
     assert "sensitive-provider-response" not in message
 
+
 def test_online_request_failure_without_status_hides_exception_details():
     failure = RuntimeError("secret-token and private response body")
 
@@ -631,6 +645,7 @@ def test_online_request_failure_without_status_hides_exception_details():
     assert "check connectivity, endpoint, model, and credentials" in message
     assert "secret-token" not in message
     assert "private response body" not in message
+
 
 def test_online_model_uses_openai_compatible_client_with_session_key():
     adapter = types.ModuleType("langchain_openai")
@@ -641,11 +656,14 @@ def test_online_model_uses_openai_compatible_client_with_session_key():
         )
     assert model is not None
     adapter.ChatOpenAI.assert_called_once()
-    assert adapter.ChatOpenAI.call_args.kwargs["base_url"] == "https://api.example.test/v1"
+    assert (
+        adapter.ChatOpenAI.call_args.kwargs["base_url"] == "https://api.example.test/v1"
+    )
     assert adapter.ChatOpenAI.call_args.kwargs["api_key"] == "session-secret"
     assert adapter.ChatOpenAI.call_args.kwargs["http_client"] is not None
     assert adapter.ChatOpenAI.call_args.kwargs["http_async_client"] is not None
     asyncio.run(close_outbound_http_clients())
+
 
 def test_online_model_listing_uses_safe_transport_and_session_key(monkeypatch):
     import private_agent.agent.runtime as agent
@@ -673,7 +691,9 @@ def test_online_model_listing_uses_safe_transport_and_session_key(monkeypatch):
     monkeypatch.setattr(agent, "public_only_sync_client", factory)
     monkeypatch.setattr(agent, "check_internet_connection", lambda *args: True)
     monkeypatch.setattr(agent.sys, "stdin", MagicMock(isatty=lambda: True))
-    monkeypatch.setattr(agent, "APP_CONFIG", {"online_base_url": "https://api.example.test/v1"})
+    monkeypatch.setattr(
+        agent, "APP_CONFIG", {"online_base_url": "https://api.example.test/v1"}
+    )
     monkeypatch.setattr(agent, "getpass", lambda prompt: "ephemeral-test-key")
     monkeypatch.setattr(agent, "_make_online_chat_model", lambda *args: "online-model")
     monkeypatch.setattr(
@@ -688,6 +708,7 @@ def test_online_model_listing_uses_safe_transport_and_session_key(monkeypatch):
     assert factory.call_args.kwargs["allow_loopback"] is True
     assert client.url == "https://api.example.test/v1/models"
     assert "ephemeral-test-key" not in repr(selected)
+
 
 def test_online_model_authentication_failure_is_redacted(monkeypatch):
     import httpx
@@ -716,42 +737,57 @@ def test_online_model_authentication_failure_is_redacted(monkeypatch):
     monkeypatch.setattr(agent, "public_only_sync_client", lambda **kwargs: FakeClient())
     monkeypatch.setattr(agent, "check_internet_connection", lambda *args: True)
     monkeypatch.setattr(agent.sys, "stdin", MagicMock(isatty=lambda: True))
-    monkeypatch.setattr(agent, "APP_CONFIG", {"online_base_url": "https://api.example.test/v1"})
+    monkeypatch.setattr(
+        agent, "APP_CONFIG", {"online_base_url": "https://api.example.test/v1"}
+    )
     monkeypatch.setattr(agent, "getpass", lambda prompt: "secret-should-not-leak")
     prompt = MagicMock(side_effect=["", "y"])
     monkeypatch.setattr(agent.console, "input", prompt)
     output = []
-    monkeypatch.setattr(agent.console, "print", lambda *args, **kwargs: output.append(str(args)))
+    monkeypatch.setattr(
+        agent.console, "print", lambda *args, **kwargs: output.append(str(args))
+    )
 
     assert select_online_model() is None
     assert all("secret-should-not-leak" not in line for line in output)
     assert prompt.call_count == 2
 
+
 @pytest.mark.asyncio
 async def test_network_tool_call_requires_runtime_authorization():
-    with patch("private_agent.agent.runtime.ENABLE_WEB_RESEARCH", True), \
-         patch("private_agent.agent.runtime.WEB_RESEARCH_CONSENT", "ask"), \
-         patch("private_agent.agent.runtime.AVAILABLE_TOOLS", {"web_search": MagicMock()}) as tools:
+    with (
+        patch("private_agent.agent.runtime.ENABLE_WEB_RESEARCH", True),
+        patch("private_agent.agent.runtime.WEB_RESEARCH_CONSENT", "ask"),
+        patch(
+            "private_agent.agent.runtime.AVAILABLE_TOOLS", {"web_search": MagicMock()}
+        ) as tools,
+    ):
         result = await execute_tool_call(
             {"name": "web_search", "args": {"query": "private query"}, "id": "call-1"}
         )
     assert "not authorized" in result.content
     tools["web_search"].invoke.assert_not_called()
 
+
 def test_explicit_mcp_http_endpoints_are_peer_validated(monkeypatch):
     checked = []
     monkeypatch.setattr(
         "private_agent.tools.network._resolve_validated_peer",
-        lambda host, port, allow_loopback: checked.append(
-            (host, port, allow_loopback)
-        ) or [__import__("ipaddress").ip_address("203.0.113.5")],
+        lambda host, port, allow_loopback: (
+            checked.append((host, port, allow_loopback))
+            or [__import__("ipaddress").ip_address("203.0.113.5")]
+        ),
     )
-    assert _validate_explicit_service_url(
-        "http://mcp.example.test:8080/sse", {"http", "https"}
-    ) == "http://mcp.example.test:8080/sse"
+    assert (
+        _validate_explicit_service_url(
+            "http://mcp.example.test:8080/sse", {"http", "https"}
+        )
+        == "http://mcp.example.test:8080/sse"
+    )
     assert checked == [("mcp.example.test", 8080, True)]
     with pytest.raises(ValueError, match="HTTP or HTTPS"):
         _validate_explicit_service_url("wss://mcp.example.test/ws", {"ws", "wss"})
+
 
 def test_mcp_http_transport_uses_pinned_client_factory(monkeypatch):
     captured = {}
@@ -781,15 +817,18 @@ def test_mcp_http_transport_uses_pinned_client_factory(monkeypatch):
             "langchain_mcp_adapters.client": adapter,
         },
     ):
-        assert asyncio.run(
-            load_configured_mcp_tools(
-                "remote",
-                {
-                    "transport": "streamable_http",
-                    "url": "https://mcp.example.test/mcp",
-                },
+        assert (
+            asyncio.run(
+                load_configured_mcp_tools(
+                    "remote",
+                    {
+                        "transport": "streamable_http",
+                        "url": "https://mcp.example.test/mcp",
+                    },
+                )
             )
-        ) == []
+            == []
+        )
         factory = captured["configs"]["remote"]["httpx_client_factory"]
         client = factory(headers={}, timeout=None, auth=None)
     try:
@@ -799,19 +838,17 @@ def test_mcp_http_transport_uses_pinned_client_factory(monkeypatch):
     finally:
         asyncio.run(client.aclose())
 
+
 def test_explicit_endpoint_blocks_private_hostname_resolution(monkeypatch):
     import private_agent.tools as tools
 
     monkeypatch.setattr(
         "private_agent.tools.network._getaddrinfo_with_timeout",
-        lambda host, port, *_args: [
-            "10.0.0.7"
-        ],
+        lambda host, port, *_args: ["10.0.0.7"],
     )
     with pytest.raises(OSError, match="non-public address"):
-        tools._resolve_validated_peer(
-            "mcp.example.test", 8080, allow_loopback=True
-        )
+        tools._resolve_validated_peer("mcp.example.test", 8080, allow_loopback=True)
+
 
 def test_duckduckgo_search_uses_bounded_pinned_http_client(monkeypatch):
     html = b"""
@@ -895,7 +932,10 @@ def _configured_online_setup(monkeypatch, answers):
     monkeypatch.setattr(
         agent,
         "APP_CONFIG",
-        {"online_base_url": "https://saved.example.test/v1", "online_api_key": "saved-key"},
+        {
+            "online_base_url": "https://saved.example.test/v1",
+            "online_api_key": "saved-key",
+        },
     )
     monkeypatch.setattr(agent, "getpass", lambda prompt: "typed-key")
     monkeypatch.setattr(agent, "_make_online_chat_model", lambda *args: "online-model")

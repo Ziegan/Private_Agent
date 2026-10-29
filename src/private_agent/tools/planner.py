@@ -36,8 +36,7 @@ def _format_task(task: dict) -> str:
             "validation evidence recorded; listed citations are untrusted "
             "references and have not been independently verified"
             if validation_current
-            else "incomplete; plan approval does not validate research facts "
-            "or sources"
+            else "incomplete; plan approval does not validate research facts or sources"
         )
     return json.dumps(formatted_task, ensure_ascii=False, indent=2)
 
@@ -132,8 +131,7 @@ def _require_schema(*table_names: str) -> None:
     if missing:
         raise ValueError(
             "Read the destination table schema with read_table_schema before "
-            "preparing this SQLite write. Missing schema: "
-            + ", ".join(sorted(missing))
+            "preparing this SQLite write. Missing schema: " + ", ".join(sorted(missing))
         )
 
 
@@ -214,8 +212,7 @@ def update_todo_step(step_id: str, status: str, evidence: str = "") -> str:
     try:
         task = memory.get_task(task_id)
         if task is None or (
-            task["session_id"] != session_id
-            and task_id != _task_state.ACTIVE_TASK_ID
+            task["session_id"] != session_id and task_id != _task_state.ACTIVE_TASK_ID
         ):
             return "Error: Active task plan is unavailable."
         updated = memory.update_task_step(
@@ -271,8 +268,7 @@ def revise_task_plan(
         )
         return (
             "Revised plan saved in SQLite; approval was invalidated. Review it "
-            "with /tasks before continuing.\n"
-            + _format_task(revised)
+            "with /tasks before continuing.\n" + _format_task(revised)
         )
     except (ValueError, OSError) as exc:
         return f"Error revising task plan: {exc}"

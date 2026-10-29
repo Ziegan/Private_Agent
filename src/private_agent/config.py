@@ -212,13 +212,12 @@ _LEGACY_CONFIG_KEYS = {
     "VISIBILE_REASONING": ("agent", "visible_reasoning"),
     "visible_reasoning": ("agent", "visible_reasoning"),
     "max_model_capability_cache_entries": (
-        "agent", "max_model_capability_cache_entries"
+        "agent",
+        "max_model_capability_cache_entries",
     ),
     "conversation_retention_days": ("memory", "conversation_retention_days"),
     "episode_retention_days": ("memory", "episode_retention_days"),
-    "registered_skill_retention_days": (
-        "memory", "registered_skill_retention_days"
-    ),
+    "registered_skill_retention_days": ("memory", "registered_skill_retention_days"),
     "task_stale_after_days": ("memory", "task_stale_after_days"),
     "max_summary_chars": ("memory", "max_summary_chars"),
     "rag_max_file_bytes": ("rag", "max_file_bytes"),
@@ -253,10 +252,7 @@ _LEGACY_CONFIG_KEYS = {
 
 def _merge_config(config: dict) -> dict:
     """Merge categorized settings and legacy flat settings into runtime aliases."""
-    merged = {
-        section: values.copy()
-        for section, values in DEFAULT_CONFIG.items()
-    }
+    merged = {section: values.copy() for section, values in DEFAULT_CONFIG.items()}
     for section, values in config.items():
         if section in merged and isinstance(values, dict):
             merged[section].update(values)
@@ -285,15 +281,14 @@ def _merge_config(config: dict) -> dict:
 
 def _categorized_config_for_file(config: dict, merged: dict) -> dict:
     """Return normalized sectioned settings while preserving unknown extensions."""
-    categorized = {
-        section: merged[section]
-        for section in DEFAULT_CONFIG
-    }
-    categorized.update({
-        key: value
-        for key, value in config.items()
-        if key not in DEFAULT_CONFIG and key not in _LEGACY_CONFIG_KEYS
-    })
+    categorized = {section: merged[section] for section in DEFAULT_CONFIG}
+    categorized.update(
+        {
+            key: value
+            for key, value in config.items()
+            if key not in DEFAULT_CONFIG and key not in _LEGACY_CONFIG_KEYS
+        }
+    )
     return categorized
 
 
@@ -334,8 +329,7 @@ def _persist_categorized_config(config: dict) -> None:
             except OSError:
                 pass
         warnings.warn(
-            f"Could not update categorized configuration at "
-            f"{CONFIG_FILE_PATH}: {exc}",
+            f"Could not update categorized configuration at {CONFIG_FILE_PATH}: {exc}",
             RuntimeWarning,
         )
 
@@ -354,12 +348,17 @@ def load_or_create_config() -> dict:
         except FileExistsError:
             pass
         except Exception as e:
-            warnings.warn(f"Failed to create default configuration file at {CONFIG_FILE_PATH}: {e}", RuntimeWarning)
+            warnings.warn(
+                f"Failed to create default configuration file at {CONFIG_FILE_PATH}: {e}",
+                RuntimeWarning,
+            )
             return _merge_config(DEFAULT_CONFIG)
 
     try:
         if CONFIG_FILE_PATH.is_dir():
-            raise IsADirectoryError(f"Config path {CONFIG_FILE_PATH} is a directory, not a file.")
+            raise IsADirectoryError(
+                f"Config path {CONFIG_FILE_PATH} is a directory, not a file."
+            )
 
         content = CONFIG_FILE_PATH.read_text(encoding="utf-8").strip()
         if not content:
@@ -367,31 +366,49 @@ def load_or_create_config() -> dict:
 
         config = json.loads(content)
         if not isinstance(config, dict):
-            raise ValueError(f"Configuration root must be a JSON object (dict), got {type(config).__name__}")
+            raise ValueError(
+                f"Configuration root must be a JSON object (dict), got {type(config).__name__}"
+            )
 
         merged = _merge_config(config)
         _persist_categorized_config(_categorized_config_for_file(config, merged))
         return merged
-    except (json.JSONDecodeError, ValueError, IsADirectoryError, PermissionError, OSError) as jde:
+    except (
+        json.JSONDecodeError,
+        ValueError,
+        IsADirectoryError,
+        PermissionError,
+        OSError,
+    ) as jde:
         # Suppress or issue warning cleanly for malformed/invalid config scenarios
         if not sys_modules_safe():
-            warnings.warn(f"Malformed or invalid configuration encountered in {CONFIG_FILE_PATH}: {jde}. Falling back to default configuration.", RuntimeWarning)
+            warnings.warn(
+                f"Malformed or invalid configuration encountered in {CONFIG_FILE_PATH}: {jde}. Falling back to default configuration.",
+                RuntimeWarning,
+            )
         return _merge_config(DEFAULT_CONFIG)
     except Exception as e:
-        warnings.warn(f"Unexpected error reading configuration file {CONFIG_FILE_PATH}: {e}. Falling back to default configuration.", RuntimeWarning)
+        warnings.warn(
+            f"Unexpected error reading configuration file {CONFIG_FILE_PATH}: {e}. Falling back to default configuration.",
+            RuntimeWarning,
+        )
         return _merge_config(DEFAULT_CONFIG)
+
 
 def sys_modules_safe() -> bool:
     import sys
 
     return "pytest" in sys.modules
 
+
 def load_config() -> dict:
     """Alias for load_or_create_config for compatibility with tool/agent modules."""
     return load_or_create_config()
 
+
 # Load global configuration immediately with safe parsing/type conversions
 APP_CONFIG = load_or_create_config()
+
 
 def _configured_path(value, default: str) -> str:
     """Expand config paths and anchor relative paths to the user's home."""
@@ -401,7 +418,9 @@ def _configured_path(value, default: str) -> str:
     return str(path.resolve())
 
 
-DEFAULT_DB_PATH = os.path.expanduser(str(APP_CONFIG.get("default_db_path", "~/.local_ai_memory.db")))
+DEFAULT_DB_PATH = os.path.expanduser(
+    str(APP_CONFIG.get("default_db_path", "~/.local_ai_memory.db"))
+)
 WORKSPACE_ROOT_DEFAULT = str(APP_CONFIG.get("workspace_root", "."))
 CODE_OUTPUT_ROOT = str(APP_CONFIG.get("code_output_root", "~/.private_agent/projects"))
 SKILLS_FOLDER_DEFAULT = _configured_path(
@@ -412,6 +431,7 @@ RAG_DOCS_DEFAULT = _configured_path(
     APP_CONFIG.get("paths", {}).get("rag_documents"),
     DEFAULT_CONFIG["paths"]["rag_documents"],
 )
+
 
 def _positive_int(key: str, default: int) -> int:
     try:
@@ -498,9 +518,7 @@ MAX_TASK_SECONDS = _positive_int("max_task_seconds", 600)
 MAX_TOOL_OUTPUT_CHARS = _positive_int("max_tool_output_chars", 12000)
 MAX_HISTORY_MESSAGES = _positive_int("max_history_messages", 20)
 MAX_CONTEXT_TOKENS = _positive_int("max_context_tokens", 12000)
-MAX_OUTPUT_TOKENS = _configured_int_range(
-    "agent", "max_output_tokens", 2048, 1, 32768
-)
+MAX_OUTPUT_TOKENS = _configured_int_range("agent", "max_output_tokens", 2048, 1, 32768)
 STREAMING_OUTPUT = _configured_bool("agent", "streaming_output", True)
 VISIBLE_REASONING = _configured_bool("agent", "visible_reasoning", False)
 VISIBILE_REASONING = VISIBLE_REASONING
@@ -510,18 +528,26 @@ SYSTEM_PROMPT = (
     if isinstance(_configured_system_prompt, str) and _configured_system_prompt.strip()
     else DEFAULT_SYSTEM_PROMPT
 )
-CONVERSATION_RETENTION_DAYS = max(
-    0, _positive_int("conversation_retention_days", 0)
-) if APP_CONFIG.get("conversation_retention_days", 0) else 0
-EPISODE_RETENTION_DAYS = max(
-    0, _positive_int("episode_retention_days", 0)
-) if APP_CONFIG.get("episode_retention_days", 0) else 0
-REGISTERED_SKILL_RETENTION_DAYS = max(
-    0, _positive_int("registered_skill_retention_days", 0)
-) if APP_CONFIG.get("registered_skill_retention_days", 0) else 0
-TASK_STALE_AFTER_DAYS = max(
-    0, _positive_int("task_stale_after_days", 0)
-) if APP_CONFIG.get("task_stale_after_days", 0) else 0
+CONVERSATION_RETENTION_DAYS = (
+    max(0, _positive_int("conversation_retention_days", 0))
+    if APP_CONFIG.get("conversation_retention_days", 0)
+    else 0
+)
+EPISODE_RETENTION_DAYS = (
+    max(0, _positive_int("episode_retention_days", 0))
+    if APP_CONFIG.get("episode_retention_days", 0)
+    else 0
+)
+REGISTERED_SKILL_RETENTION_DAYS = (
+    max(0, _positive_int("registered_skill_retention_days", 0))
+    if APP_CONFIG.get("registered_skill_retention_days", 0)
+    else 0
+)
+TASK_STALE_AFTER_DAYS = (
+    max(0, _positive_int("task_stale_after_days", 0))
+    if APP_CONFIG.get("task_stale_after_days", 0)
+    else 0
+)
 MAX_SUMMARY_CHARS = _positive_int("max_summary_chars", 2000)
 MAX_LEARNED_ITEM_CHARS = _configured_int_range(
     "memory", "max_learned_item_chars", 1000, 1, 10000
@@ -541,12 +567,8 @@ LEARNED_ITEM_EXPIRY_DAYS = _configured_int_range(
 LEARNED_ITEM_REVIEW_DAYS = _configured_int_range(
     "memory", "learned_item_review_days", 180, 1, 3650
 )
-DEFAULT_HISTORY_MESSAGES = _configured_int(
-    "memory", "default_history_messages", 20
-)
-DEFAULT_EPISODIC_SUMMARIES = _configured_int(
-    "memory", "default_episodic_summaries", 5
-)
+DEFAULT_HISTORY_MESSAGES = _configured_int("memory", "default_history_messages", 20)
+DEFAULT_EPISODIC_SUMMARIES = _configured_int("memory", "default_episodic_summaries", 5)
 MAX_NETWORK_CONCURRENCY = _positive_int("max_network_concurrency", 4)
 NETWORK_REQUEST_TIMEOUT = _positive_int("network_request_timeout", 30)
 RAG_MAX_FILE_BYTES = _positive_int("rag_max_file_bytes", 5 * 1024 * 1024)
@@ -555,9 +577,9 @@ RAG_MAX_PDF_PAGES = _positive_int("rag_max_pdf_pages", 250)
 RAG_MAX_DOCUMENTS = _positive_int("rag_max_documents", 20000)
 RAG_CHUNK_SIZE_CHARS = _configured_int("rag", "chunk_size_chars", 1200)
 RAG_CHUNK_OVERLAP_CHARS = _configured_int("rag", "chunk_overlap_chars", 200)
-CHUNKING_STRATEGY = str(
-    APP_CONFIG.get("chunking", {}).get("strategy", "character")
-).strip().lower()
+CHUNKING_STRATEGY = (
+    str(APP_CONFIG.get("chunking", {}).get("strategy", "character")).strip().lower()
+)
 CHUNKING_UNIT = str(APP_CONFIG.get("chunking", {}).get("unit", "chars")).strip().lower()
 # Unset chunk_size/chunk_overlap fall back to the legacy rag.chunk_* keys.
 CHUNKING_SIZE = _configured_int("chunking", "chunk_size", RAG_CHUNK_SIZE_CHARS)
@@ -622,7 +644,9 @@ if isinstance(_raw_thinking, str):
 else:
     THINKING_TOGGLE_DEFAULT = bool(_raw_thinking)
 
-THINKING_EFFORT_DEFAULT = str(APP_CONFIG.get("thinking_effort_default", "medium")).lower()
+THINKING_EFFORT_DEFAULT = str(
+    APP_CONFIG.get("thinking_effort_default", "medium")
+).lower()
 if THINKING_EFFORT_DEFAULT not in {"low", "medium", "high"}:
     THINKING_EFFORT_DEFAULT = "medium"
 
@@ -636,9 +660,9 @@ if isinstance(_debug_log_enabled, str):
 else:
     DEBUG_LOG_ENABLED = _debug_log_enabled == 1 or _debug_log_enabled is True
 
-DEBUG_LOG_LEVEL = str(
-    (APP_CONFIG.get("logging") or {}).get("level", "INFO")
-).strip().upper()
+DEBUG_LOG_LEVEL = (
+    str((APP_CONFIG.get("logging") or {}).get("level", "INFO")).strip().upper()
+)
 if DEBUG_LOG_LEVEL not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
     DEBUG_LOG_LEVEL = "INFO"
 
@@ -661,9 +685,7 @@ MAX_MODEL_CAPABILITY_CACHE_ENTRIES = _configured_int(
     "agent", "max_model_capability_cache_entries", 128
 )
 MAX_WEBPAGE_BYTES = _configured_int("network", "max_webpage_bytes", 2 * 1024 * 1024)
-MAX_DOWNLOAD_BYTES = _configured_int(
-    "network", "max_download_bytes", 25 * 1024 * 1024
-)
+MAX_DOWNLOAD_BYTES = _configured_int("network", "max_download_bytes", 25 * 1024 * 1024)
 MAX_HTTP_REDIRECTS = _configured_nonnegative_int("network", "max_http_redirects", 5)
 MAX_SEARCH_QUERY_CHARS = _configured_int("network", "max_search_query_chars", 2000)
 MAX_SEARCH_RESULTS = _configured_int("network", "max_search_results", 3)
@@ -676,16 +698,16 @@ BINARY_PROBE_BYTES = _configured_int("tools", "binary_probe_bytes", 2048)
 SHELL_COMMAND_TIMEOUT = _configured_int("tools", "shell_command_timeout_seconds", 30)
 DEFAULT_HISTORY_READ_LIMIT = _configured_int("tools", "default_history_read_limit", 20)
 MAX_SKILL_NAME_CHARS = _configured_int("skills", "max_name_chars", 64)
-MAX_STREAM_TIMEOUT = _configured_int(
-    "network", "max_stream_timeout_seconds", 600
-)
+MAX_STREAM_TIMEOUT = _configured_int("network", "max_stream_timeout_seconds", 600)
 MAX_CAPTURED_IMAGE_BYTES = _configured_int(
     "media", "max_captured_image_bytes", 2 * 1024 * 1024
 )
 MAX_DECODED_IMAGE_PIXELS = _configured_int(
     "media", "max_decoded_image_pixels", 20_000_000
 )
-MAX_MEDIA_FILE_BYTES = _configured_int("media", "max_media_file_bytes", 25 * 1024 * 1024)
+MAX_MEDIA_FILE_BYTES = _configured_int(
+    "media", "max_media_file_bytes", 25 * 1024 * 1024
+)
 MAX_IMAGES_PER_TURN = _configured_int("media", "max_images_per_turn", 3)
 MAX_MICROPHONE_SECONDS = _configured_int("media", "max_microphone_seconds", 30)
 MAX_VIDEO_SECONDS = _configured_int("media", "max_video_seconds", 120)
@@ -732,11 +754,11 @@ except (AttributeError, TypeError, ValueError):
     CONTEXT_COMPACTION_THRESHOLD = 0.8
 if not 0 <= CONTEXT_COMPACTION_THRESHOLD <= 1:
     CONTEXT_COMPACTION_THRESHOLD = 0.8
-CONTEXT_KEEP_RECENT_MESSAGES = _configured_int("agent", "context_keep_recent_messages", 6)
-CONTEXT_SUMMARY_CHARS = _configured_int("agent", "context_summary_chars", 1500)
-CODE_TASK_GIT_TIMEOUT = _configured_int(
-    "code_tasks", "git_command_timeout_seconds", 30
+CONTEXT_KEEP_RECENT_MESSAGES = _configured_int(
+    "agent", "context_keep_recent_messages", 6
 )
+CONTEXT_SUMMARY_CHARS = _configured_int("agent", "context_summary_chars", 1500)
+CODE_TASK_GIT_TIMEOUT = _configured_int("code_tasks", "git_command_timeout_seconds", 30)
 CODE_TASK_TEST_TIMEOUT = _configured_int(
     "code_tasks", "test_command_timeout_seconds", 180
 )

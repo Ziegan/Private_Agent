@@ -11,17 +11,26 @@ from private_agent.agent.session_stats import (
 def test_reported_usage_is_used_and_missing_usage_estimated():
     stats = SessionStats()
     reported = AIMessage(
-        content="x", usage_metadata={"input_tokens": 10, "output_tokens": 4, "total_tokens": 14}
+        content="x",
+        usage_metadata={"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
     )
     stats.record_model_call([HumanMessage(content="hi")], reported, 1.0, "m")
-    assert (stats.input_tokens, stats.output_tokens, stats.estimated_calls) == (10, 4, 0)
-    stats.record_model_call([HumanMessage(content="hello world")], AIMessage(content="ok"), 0.5)
+    assert (stats.input_tokens, stats.output_tokens, stats.estimated_calls) == (
+        10,
+        4,
+        0,
+    )
+    stats.record_model_call(
+        [HumanMessage(content="hello world")], AIMessage(content="ok"), 0.5
+    )
     assert stats.estimated_calls == 1 and stats.model_calls == 2
     assert stats.total_tokens > 14
 
 
 def test_ollama_metadata_and_tool_counts():
-    msg = AIMessage(content="x", response_metadata={"prompt_eval_count": 7, "eval_count": 3})
+    msg = AIMessage(
+        content="x", response_metadata={"prompt_eval_count": 7, "eval_count": 3}
+    )
     assert response_usage(msg) == (7, 3)
     stats = SessionStats()
     stats.record_tool_call("web_search")

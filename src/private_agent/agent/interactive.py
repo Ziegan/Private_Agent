@@ -88,16 +88,18 @@ def format_help() -> str:
         f"  [cyan]{command}[/cyan] — {description}"
         for command, description in SESSION_COMMANDS.items()
     )
-    lines.extend([
-        "  [cyan]@<workspace-relative-path>[/cyan] — Include a UTF-8 text file "
-        "in this request (for example: @src/app.py explain this file).",
-        "  [cyan]/add <workspace-relative-folder>[/cyan] — Include supported "
-        "UTF-8 text files from a folder in the next request only.",
-        "  File context is read-only and limited to the workspace and configured "
-        f"{MAX_READ_FILE_BYTES}-byte total limit. `/context` reviews queued "
-        "folder files; `/context clear` removes them before sending. Attached "
-        "contents are sent to the selected model and are not stored in chat history.",
-    ])
+    lines.extend(
+        [
+            "  [cyan]@<workspace-relative-path>[/cyan] — Include a UTF-8 text file "
+            "in this request (for example: @src/app.py explain this file).",
+            "  [cyan]/add <workspace-relative-folder>[/cyan] — Include supported "
+            "UTF-8 text files from a folder in the next request only.",
+            "  File context is read-only and limited to the workspace and configured "
+            f"{MAX_READ_FILE_BYTES}-byte total limit. `/context` reviews queued "
+            "folder files; `/context clear` removes them before sending. Attached "
+            "contents are sent to the selected model and are not stored in chat history.",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -115,7 +117,7 @@ class AgentCompleter(Completer):
         current_word = text.rsplit(None, 1)[-1] if text.strip() else ""
         command_prefix = text.lstrip()
         if command_prefix.startswith("/add "):
-            folder_prefix = command_prefix[len("/add "):]
+            folder_prefix = command_prefix[len("/add ") :]
             yield from self._file_completions(
                 folder_prefix,
                 marker="",
@@ -123,11 +125,11 @@ class AgentCompleter(Completer):
             )
             return
         if command_prefix.startswith("/skills "):
-            skill_text = command_prefix[len("/skills "):].strip()
+            skill_text = command_prefix[len("/skills ") :].strip()
             skill_prefix = skill_text.rsplit(None, 1)[-1] if skill_text else ""
             for key, skill in self.skills.items():
                 if key.casefold().startswith(skill_prefix.casefold()):
-                    insertion = key[len(skill_prefix):]
+                    insertion = key[len(skill_prefix) :]
                     yield Completion(
                         insertion,
                         display=f"/skills {key}",
@@ -136,12 +138,12 @@ class AgentCompleter(Completer):
             return
         if (
             command_prefix.startswith("/")
-            and not text[:len(text) - len(command_prefix)].strip()
+            and not text[: len(text) - len(command_prefix)].strip()
         ):
             for command, description in SLASH_COMMANDS.items():
                 if command.startswith(command_prefix):
                     yield Completion(
-                        command[len(command_prefix):],
+                        command[len(command_prefix) :],
                         display=command,
                         display_meta=description,
                     )
@@ -149,12 +151,12 @@ class AgentCompleter(Completer):
         if (
             current_word
             and not current_word.startswith("@")
-            and not text[:len(text) - len(current_word)].strip()
+            and not text[: len(text) - len(current_word)].strip()
         ):
             for command, description in SESSION_COMMANDS.items():
                 if command.startswith(current_word):
                     yield Completion(
-                        command[len(current_word):],
+                        command[len(current_word) :],
                         display=command,
                         display_meta=description,
                     )
@@ -169,7 +171,7 @@ class AgentCompleter(Completer):
         marker: str = "@",
         directories_only: bool = False,
     ):
-        typed_path = current_word[len(marker):] if marker else current_word
+        typed_path = current_word[len(marker) :] if marker else current_word
         typed_path = typed_path.replace("\\ ", " ")
         path = Path(typed_path) if typed_path else Path()
         if typed_path.endswith("/"):
@@ -203,7 +205,7 @@ class AgentCompleter(Completer):
             completed_path = str(parent_fragment / entry.name) + suffix
             insertion = marker + completed_path
             yield Completion(
-                insertion[len(current_word):],
+                insertion[len(current_word) :],
                 display=insertion,
                 display_meta="directory" if is_directory else "workspace file",
             )
@@ -227,9 +229,7 @@ async def prompt_user_input(
         enable_history_search=True,
         history=history,
     )
-    return await session.prompt_async(
-        ANSI("\x1b[1;34m" + prompt_message + "\x1b[0m")
-    )
+    return await session.prompt_async(ANSI("\x1b[1;34m" + prompt_message + "\x1b[0m"))
 
 
 def include_file_context(
@@ -247,7 +247,7 @@ def include_file_context(
     blocks = []
     total_bytes = 0
     for reference in references:
-        query_parts.append(user_input[cursor:reference.start()])
+        query_parts.append(user_input[cursor : reference.start()])
         raw_path = reference.group("path")
         try:
             requested_path = shlex.split(raw_path)
@@ -266,13 +266,17 @@ def include_file_context(
             raise ValueError(f"File context '{display_path}' is not a regular file.")
         remaining = max_bytes - total_bytes
         if remaining <= 0:
-            raise ValueError(f"Attached file context exceeds the {max_bytes}-byte limit.")
+            raise ValueError(
+                f"Attached file context exceeds the {max_bytes}-byte limit."
+            )
         with target.open("rb") as source:
             content = source.read(remaining + 1)
         if b"\x00" in content:
             raise ValueError(f"File context '{display_path}' appears to be binary.")
         if len(content) > remaining:
-            raise ValueError(f"Attached file context exceeds the {max_bytes}-byte limit.")
+            raise ValueError(
+                f"Attached file context exceeds the {max_bytes}-byte limit."
+            )
         try:
             text = content.decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -339,8 +343,7 @@ def include_folder_context(
         directories[:] = sorted(
             name
             for name in directories
-            if not name.startswith(".")
-            and not (Path(current) / name).is_symlink()
+            if not name.startswith(".") and not (Path(current) / name).is_symlink()
         )
         for filename in sorted(filenames):
             candidate = Path(current) / filename
@@ -388,9 +391,7 @@ def include_folder_context(
             )
 
     if not blocks:
-        raise ValueError(
-            f"Folder '{display_path}' contains no supported text files."
-        )
+        raise ValueError(f"Folder '{display_path}' contains no supported text files.")
     context = (
         f"[Folder context from {relative_folder}; {file_count} file(s)]\n"
         + "\n\n".join(blocks)

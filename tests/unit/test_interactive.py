@@ -79,16 +79,20 @@ async def test_memory_maintenance_reviews_deletes_and_runs_database_maintenance(
     memory = PersistentMemory(str(tmp_path / "memory.sqlite"))
     memory.save_message("session", "human", "conversation remains")
     memory.save_summary("session", "episode summary")
-    entry_id = int(memory.conn.execute(
-        "SELECT id FROM chat_history WHERE role = 'summary'"
-    ).fetchone()[0])
-    commands = iter([
-        f"view {entry_id}",
-        f"ask {entry_id} what happened?",
-        f"delete {entry_id}",
-        f"delete {entry_id}",
-        "done",
-    ])
+    entry_id = int(
+        memory.conn.execute(
+            "SELECT id FROM chat_history WHERE role = 'summary'"
+        ).fetchone()[0]
+    )
+    commands = iter(
+        [
+            f"view {entry_id}",
+            f"ask {entry_id} what happened?",
+            f"delete {entry_id}",
+            f"delete {entry_id}",
+            "done",
+        ]
+    )
     printed = []
     monkeypatch.setattr(runtime.console, "input", lambda _prompt: next(commands))
     monkeypatch.setattr(
@@ -127,9 +131,11 @@ async def test_memory_maintenance_does_not_send_episode_to_unapproved_online_mod
 
     memory = PersistentMemory(str(tmp_path / "memory.sqlite"))
     memory.save_summary("session", "private episode")
-    entry_id = int(memory.conn.execute(
-        "SELECT id FROM chat_history WHERE role = 'summary'"
-    ).fetchone()[0])
+    entry_id = int(
+        memory.conn.execute(
+            "SELECT id FROM chat_history WHERE role = 'summary'"
+        ).fetchone()[0]
+    )
     commands = iter([f"ask {entry_id} summarize it", "done"])
     monkeypatch.setattr(runtime.console, "input", lambda _prompt: next(commands))
     monkeypatch.setattr(runtime.console, "print", lambda *_args, **_kwargs: None)
@@ -641,18 +647,24 @@ def test_task_derived_learning_requires_verified_validation_preview_and_save(
                 )
             else:
                 memory.update_task_step(
-                    task["task_id"], task["revision"], step_id,
-                    "reported_done", "The step completed.",
+                    task["task_id"],
+                    task["revision"],
+                    step_id,
+                    "reported_done",
+                    "The step completed.",
                 )
                 memory.verify_task_step(
-                    task["task_id"], task["revision"], step_id,
+                    task["task_id"],
+                    task["revision"],
+                    step_id,
                     "Focused unit tests passed.",
                 )
         if skip_all:
             memory.conn.commit()
         if validated:
             memory.record_task_validation(
-                task["task_id"], task["revision"],
+                task["task_id"],
+                task["revision"],
                 "Automated project tests passed.",
             )
         return memory.complete_task(task["task_id"])
@@ -739,11 +751,16 @@ async def test_model_learning_suggestion_is_local_verified_and_user_confirmed(
         task["task_id"], task["revision"], task["digest"], "coding: approved"
     )
     memory.update_task_step(
-        task["task_id"], task["revision"], "test", "reported_done",
+        task["task_id"],
+        task["revision"],
+        "test",
+        "reported_done",
         "Regression tests cover quoted fields.",
     )
     memory.verify_task_step(
-        task["task_id"], task["revision"], "test",
+        task["task_id"],
+        task["revision"],
+        "test",
         "Regression tests pass for quoted fields.",
     )
     memory.record_task_validation(
@@ -948,13 +965,15 @@ def test_direct_workspace_approval_persists_access_and_network_scope(
         "coding",
         [{"step_id": "edit", "description": "Update source"}],
     )
-    commands = iter([
-        f"approve {task['task_id']}",
-        "1",
-        "project",
-        f"APPROVE {task['task_id'][:8]}",
-        "done",
-    ])
+    commands = iter(
+        [
+            f"approve {task['task_id']}",
+            "1",
+            "project",
+            f"APPROVE {task['task_id'][:8]}",
+            "done",
+        ]
+    )
     monkeypatch.setattr(runtime.console, "input", lambda _prompt: next(commands))
     monkeypatch.setattr(runtime.console, "print", lambda *_args, **_kwargs: None)
     set_active_task_context("session")
@@ -1055,7 +1074,9 @@ def test_abandoned_task_cannot_be_resumed(tmp_path, monkeypatch):
     runtime._run_task_management(memory, "later-session")
 
     assert memory.get_task(task["task_id"])["status"] == "abandoned"
-    assert any("Only active, paused, interrupted, or stale tasks" in item for item in output)
+    assert any(
+        "Only active, paused, interrupted, or stale tasks" in item for item in output
+    )
     memory.close()
 
 
@@ -1106,7 +1127,9 @@ def test_research_validation_prompts_for_source_quality_review(tmp_path, monkeyp
     validated = memory.get_task(task["task_id"])
     assert validated["validation_revision"] == task["revision"]
     assert "authority, and freshness" in validated["validation_evidence"]
-    assert any("after checking the listed claims/sources" in prompt for prompt in prompts)
+    assert any(
+        "after checking the listed claims/sources" in prompt for prompt in prompts
+    )
     assert any("INCOMPLETE" in message for message in printed)
     assert any("have not been independently verified" in message for message in printed)
     memory.close()
@@ -1236,11 +1259,16 @@ def test_skill_registration_failure_rolls_back_created_skill_file(
     )
     for step_id in ("inspect", "verify"):
         memory.update_task_step(
-            task["task_id"], task["revision"], step_id, "reported_done",
+            task["task_id"],
+            task["revision"],
+            step_id,
+            "reported_done",
             "Checked parser test evidence.",
         )
         memory.verify_task_step(
-            task["task_id"], task["revision"], step_id,
+            task["task_id"],
+            task["revision"],
+            step_id,
             "Focused parser tests passed.",
         )
     memory.record_task_validation(
@@ -1256,9 +1284,7 @@ def test_skill_registration_failure_rolls_back_created_skill_file(
 
     monkeypatch.setattr(memory, "register_skill_file", fail_registration)
 
-    runtime._offer_skill_capture(
-        memory, completed, "session", str(skills_directory)
-    )
+    runtime._offer_skill_capture(memory, completed, "session", str(skills_directory))
 
     assert list(skills_directory.iterdir()) == []
     assert memory.count_registered_skill_files() == 0
@@ -1336,7 +1362,10 @@ def test_skill_capture_needs_validation_and_non_five_rating_stays_feedback_only(
         )
         for step_id in ("inspect", "verify"):
             memory.update_task_step(
-                task["task_id"], task["revision"], step_id, "reported_done",
+                task["task_id"],
+                task["revision"],
+                step_id,
+                "reported_done",
                 "Evidence was examined.",
             )
             memory.verify_task_step(
@@ -1351,9 +1380,7 @@ def test_skill_capture_needs_validation_and_non_five_rating_stays_feedback_only(
     rated = complete_task("Rated research task", validated=True)
     monkeypatch.setattr(runtime.console, "input", lambda _prompt: "4")
     monkeypatch.setattr(runtime.console, "print", lambda *_args, **_kwargs: None)
-    runtime._offer_skill_capture(
-        memory, rated, "session", str(tmp_path / "skills")
-    )
+    runtime._offer_skill_capture(memory, rated, "session", str(tmp_path / "skills"))
     assert memory.get_task(rated["task_id"])["user_rating"] == 4
     assert not (tmp_path / "skills").exists()
 
@@ -1423,9 +1450,7 @@ def test_retention_removes_only_skill_files_inside_configured_directory(
     outside.write_text("external file", encoding="utf-8")
     memory.register_skill_file("session", str(inside), "inside")
     memory.register_skill_file("session", str(outside), "outside")
-    memory.conn.execute(
-        "UPDATE chat_history SET timestamp = '2000-01-01 00:00:00'"
-    )
+    memory.conn.execute("UPDATE chat_history SET timestamp = '2000-01-01 00:00:00'")
     memory.conn.commit()
     monkeypatch.setattr(runtime.console, "print", lambda *_args, **_kwargs: None)
 
@@ -1618,9 +1643,7 @@ def test_startup_memory_context_includes_bounded_local_episode_and_skill(
     assert "Run parser tests" not in context
     assert "All parser tests pass" not in context
     assert "Registered skill files available as references: 1." in context
-    assert (
-        f"artifact {skills[0]['id']}, research.md" in context
-    )
+    assert f"artifact {skills[0]['id']}, research.md" in context
     assert "Research with source verification" in context
     assert "Verify claims with sources." not in context
     memory.close()
@@ -1632,9 +1655,7 @@ def test_coding_guidance_detection_is_broader_than_code_task_detection():
     assert runtime._is_coding_guidance_request(
         "Review the production readiness of this application"
     )
-    assert not runtime._is_coding_guidance_request(
-        "Summarize this history for me"
-    )
+    assert not runtime._is_coding_guidance_request("Summarize this history for me")
 
 
 def test_completer_suggests_slash_commands(temp_workspace):
@@ -1691,12 +1712,8 @@ def test_completer_suggests_loaded_skills_after_skills_command(temp_workspace):
     }
     completer = AgentCompleter(temp_workspace, skills)
 
-    all_skills = list(
-        completer.get_completions(Document("/skills "), None)
-    )
-    filtered_skills = list(
-        completer.get_completions(Document("/skills py"), None)
-    )
+    all_skills = list(completer.get_completions(Document("/skills "), None))
+    filtered_skills = list(completer.get_completions(Document("/skills py"), None))
 
     assert {_completion_text(item) for item in all_skills} == {
         "/skills python_expert",
@@ -1710,9 +1727,7 @@ def test_completer_suggests_loaded_skills_after_skills_command(temp_workspace):
 def test_completer_supports_effort_arguments(temp_workspace):
     completer = AgentCompleter(temp_workspace)
 
-    completions = list(
-        completer.get_completions(Document("/think-effort h"), None)
-    )
+    completions = list(completer.get_completions(Document("/think-effort h"), None))
 
     assert [_completion_text(completion) for completion in completions] == [
         "/think-effort high"
@@ -1724,9 +1739,7 @@ def test_completer_suggests_session_commands(temp_workspace):
 
     completions = list(completer.get_completions(Document("sw"), None))
 
-    assert [_completion_text(completion) for completion in completions] == [
-        "switch"
-    ]
+    assert [_completion_text(completion) for completion in completions] == ["switch"]
 
 
 def test_completer_suggests_only_files_inside_workspace(temp_workspace, tmp_path):
@@ -1741,12 +1754,8 @@ def test_completer_suggests_only_files_inside_workspace(temp_workspace, tmp_path
         pytest.skip("Symlinks are unavailable")
 
     completer = AgentCompleter(temp_workspace)
-    root_completions = list(
-        completer.get_completions(Document("@"), None)
-    )
-    nested_completions = list(
-        completer.get_completions(Document("@src/"), None)
-    )
+    root_completions = list(completer.get_completions(Document("@"), None))
+    nested_completions = list(completer.get_completions(Document("@src/"), None))
 
     root_displays = {_completion_text(completion) for completion in root_completions}
     nested_displays = {
@@ -1766,9 +1775,7 @@ def test_add_folder_completer_suggests_workspace_directories_only(temp_workspace
     (temp_workspace / "docs" / "notes.md").touch()
 
     completer = AgentCompleter(temp_workspace)
-    completions = list(
-        completer.get_completions(Document("/add docs/"), None)
-    )
+    completions = list(completer.get_completions(Document("/add docs/"), None))
 
     assert [_completion_text(item) for item in completions] == ["docs/nested/"]
     assert completions[0].display_meta_text == "directory"
@@ -1796,9 +1803,7 @@ def test_multiple_file_context_references_share_size_limit(temp_workspace):
     with pytest.raises(ValueError, match="7-byte limit"):
         include_file_context("@one.txt @two.txt", max_bytes=7)
 
-    query, context = include_file_context(
-        "compare @one.txt with @two.txt", max_bytes=8
-    )
+    query, context = include_file_context("compare @one.txt with @two.txt", max_bytes=8)
     assert query == "compare with"
     assert "1234" in context
     assert "5678" in context
@@ -1837,9 +1842,7 @@ def test_folder_context_includes_supported_nested_files_and_skips_hidden(
     folder = temp_workspace / "docs"
     (folder / "nested").mkdir(parents=True)
     (folder / "README.md").write_text("Top-level document", encoding="utf-8")
-    (folder / "nested" / "guide.py").write_text(
-        "Nested source", encoding="utf-8"
-    )
+    (folder / "nested" / "guide.py").write_text("Nested source", encoding="utf-8")
     (folder / ".private.md").write_text("Hidden content", encoding="utf-8")
     (folder / "nested" / "image.png").write_bytes(b"\x00binary")
 
@@ -1957,9 +1960,7 @@ async def test_interactive_prompt_uses_prompt_toolkit_completer(
 
 
 @pytest.mark.asyncio
-async def test_prompt_toolkit_uses_shared_session_history(
-    temp_workspace, monkeypatch
-):
+async def test_prompt_toolkit_uses_shared_session_history(temp_workspace, monkeypatch):
     history = InMemoryHistory()
     captured = []
 
