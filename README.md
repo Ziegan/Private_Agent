@@ -509,7 +509,7 @@ isolation), `code_tasks/` (workspaces, checkpoints, tests), `hardware/`.
 
 ## 🤝 Contributing
 
-Contributions are welcome from developers, researchers, security professionals, AI enthusiasts, and open-source contributors of all experience levels.
+Contributions are welcome from anyone and open-source contributors of all experience levels.
 
 Whether you want to:
 
