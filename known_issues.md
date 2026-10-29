@@ -1,4 +1,4 @@
-# Code Review: Issues, Deviations, Gaps, Runtime, UI, Platform and Provider Plans, and Fix Roadmap
+# Code Review: Known Issues, Gaps, Plans and Fix Roadmap
 
 Review date: 2026-10-28
 
@@ -1499,40 +1499,535 @@ Rules:
 
 ---
 
-## Part J: Fix Roadmap
+## Part J: Performance
 
-Each step is small enough for its own branch and PR. Steps are ordered so that
-each one makes the next one safer: first get a reliable test and lint safety
-net, then fix real bugs, then remove global state, then restructure, then
-improve individual features, then add the features from Part C (Phase 6),
-improve planning mode from Part D (Phase 7), fill the role gaps from Part E
-(Phase 8), combine everything into one runtime with live status from
-Part F (Phase 9), improve the UI from Part G (Phase 10), support Linux,
-WSL, macOS and Termux from Part H (Phase 11), and remove the dependence on
-Ollama from Part I (Phase 12). Most of Phases 6–12 build on the shared agent
-loop,
-`PermissionPolicy` and `ToolContext` created in Phases 3 and 4; the
-"Depends on" column shows which steps can be done earlier.
+All numbers were measured on this machine (WSL2, Fedora 44, Python 3.14) with
+a temporary home folder. No model was running, so model-call time is not
+included. Synthetic data was used for the RAG and memory tests (300 Markdown
+files, 5.8 MB, 6,000 chunks; 200 chat messages; 2,000 session summaries).
 
-Recommended order of work, following the dependencies:
+### J1. Summary
 
-1. Phase 1 (safety net), then steps 11.1–11.4 (POSIX only, platform
-   detection, `doctor`, WSL fixes), so the app runs cleanly in WSL early.
-2. Phase 2 (quick fixes), then steps 10.1–10.3 (startup bugs, Markdown
-   replies, coloured diffs).
-3. Steps 7.1–7.3 and 8.3 (small planning and RAG fixes with no dependencies).
-4. Phases 3–4 (remove global state, restructure the core), then step 11.5
-   (lazy imports and optional extras) and steps 12.1–12.3 (provider adapters,
-   optional Ollama, capability detection for every provider).
-5. Steps 9.1–9.3 (event bus, capability packs, turn router), so later
-   features are added as packs instead of as special cases.
-6. Step 9.7 (live status overlay), which needs only the event bus, and step
-   11.7 (sandbox interface).
-7. Phase 5, then Phases 6, 7, 8 and the rest of 10, 11 and 12, adding new
-   tools to the right pack. Do step 12.9 (resume fallback) right after step
-   6.6 (session resume).
-8. Steps 9.4–9.6 and 9.8–9.11 (escalation, context manager, orchestrator,
-   timeline and estimates) once the planning steps they depend on are done.
+| # | Area | Measured | Severity |
+|---|---|---|---|
+| J2 | Startup imports | 2.3–2.7 s and about 130 MB before anything runs | High |
+| J3 | Tokenizer download | 1.7 MB downloaded on first use, again after every reboot; about 0.4 s | High (also a privacy issue) |
+| J4 | Tool definitions in every request | About 4,500 tokens, plus 1,050 for the system prompt | High |
+| J5 | DNS lookups | About 250 ms per lookup (49 ms for `localhost`), against 1.4 ms in-process | High for research |
+| J6 | Offline internet check | 3 s per web call when offline | Medium |
+| J7 | RAG refresh after any file change | All files re-read and re-chunked; BM25 rebuilt (325 ms) | Medium; grows with corpus size |
+| J8 | Semantic chunking on refresh | Embedding calls for every file, changed or not | High when `semantic` is used |
+| J9 | BM25 query | 5.7 ms per query over 6,000 chunks; grows linearly | Low now |
+| J10 | Database | `delete` journal mode; 75 direct database calls in async code | Low now |
+
+**Checked and fine:** RAG change detection (5.5 ms for 300 files), local
+runtime discovery (41 ms with none running), opening the database per planner
+call (about 1 ms), relevant-episode search over 2,000 summaries (20 ms), saving
+a message (0.2 ms), trimming history once the tokenizer is loaded (3 ms for 200
+messages).
+
+### J2. Startup imports
+
+Importing `private_agent.cli` takes 0.12 s, but importing the runtime takes
+**2.3–2.7 s and about 130 MB**, before any user input. Largest parts, from
+`python -X importtime`:
+
+| Module | Time |
+|---|---|
+| `chromadb` (through `langchain_chroma`, imported by `rag/indexing.py:14`) | 0.71 s |
+| `langchain_ollama` (`runtime.py:32`) | 0.52 s |
+| `langchain_core` tracers and `langsmith` (pulled in by LangChain) | 0.35 s |
+| `ollama` (`runtime.py:24`) | 0.28 s |
+| `private_agent.tools` | 0.13 s |
+| `numpy` | 0.11 s |
+
+These load even when RAG is off, Ollama is not used, or the session is
+online-only.
+
+**Fix:** import Chroma, the Ollama packages and media libraries inside the code
+that uses them (overlaps steps 11.5 and 12.2), and build the RAG index in the
+background while the user picks a provider.
+
+### J3. Tokenizer downloaded at run time
+
+`agent/prompts.py:41` loads `tiktoken.get_encoding("cl100k_base")`. tiktoken
+does not ship this vocabulary; on first use it downloads 1.7 MB from
+`openaipublic.blob.core.windows.net` and caches it in the system temp folder
+(`/tmp/data-gym-cache`). On this machine `/tmp` is a RAM disk (`tmpfs`), so the
+cache is lost on every reboot.
+
+- **Performance:** the first token count of each run after a reboot took about
+  0.44 s, mostly the download.
+- **Privacy:** an outbound request to a Microsoft-hosted server, without
+  consent, in a program whose goal is "nothing leaves the machine". The code
+  already forces `HF_HUB_OFFLINE` and `TRANSFORMERS_OFFLINE`, but not this.
+- **Offline:** without internet, the download fails and every count silently
+  falls back to `len(text) // 4`, which can be off by a large margin. That
+  affects context trimming and compaction.
+
+**Fix:** ship the vocabulary file with the package (or download it once at
+install time with consent), set `TIKTOKEN_CACHE_DIR` to a folder under
+`~/.private_agent/`, and log a visible warning when falling back. Counting
+tokens with the selected model's own tokenizer, where the provider offers it,
+would also be more accurate for local models.
+
+### J4. Tool definitions sent with every request
+
+All 34 built-in tool definitions, about **4,500 tokens**, are sent with every
+request, plus about **1,050 tokens** of system prompt. With the default
+`max_context_tokens` of 12,000, that is about **46% of the context before any
+conversation, memory or documents**. For local models this also slows the
+first token, because the whole prompt must be processed each turn, and it
+pushes out conversation history sooner.
+
+**Fix:** send only the tools each turn needs (capability packs, step 9.2).
+Plain chat would send none. Also make sure the fixed prompt prefix (system
+prompt and tool definitions) stays identical between turns, so local servers
+that reuse a cached prompt prefix (Ollama, llama.cpp) can skip reprocessing
+it.
+
+### J5. DNS lookups run a separate Python process
+
+`tools/network.py:73` resolves every hostname by starting a new Python process
+(`sys.executable -I -S -c …`), so a stuck system resolver can be killed at a
+deadline. This is a deliberate safety choice, but it is expensive:
+
+| Host | Subprocess resolver | In-process lookup |
+|---|---|---|
+| `localhost` | 49 ms | 0.3 ms |
+| `example.com` | 251 ms | 1.4 ms |
+
+It runs for every outbound request, including every redirect hop, so a
+research turn that fetches 5 pages with redirects can spend more than 2
+seconds just resolving names. There is no cache.
+
+**Fix:** keep the deadline protection, but:
+
+- cache validated results for a short time (for example 60 seconds, bounded in
+  size), re-checking the private-address rules on every use;
+- resolve in a background thread with a deadline instead of a new process (a
+  stuck thread is abandoned, not killed, which is acceptable for DNS), or use
+  an async resolver;
+- skip resolution for IP literals and for loopback runtimes (already partly
+  done for literals).
+
+### J6. Internet check before every web call
+
+`check_internet_connection()` (`tools/__init__.py:77`) opens a TCP connection
+to `1.1.1.1:443`. It runs before each web tool call (`tools/web.py:85`,
+`tools/location.py:159` and `:332`, the `require_internet` decorator at
+`tools/__init__.py:313`) and again in the network consent step
+(`runtime.py:3018`). Online it takes about 3 ms, but **offline it waits for the
+full 3-second timeout**, every time. Several web calls in one turn while
+offline add several seconds of waiting.
+
+**Fix:** cache the result for a short time (for example 30 seconds), check
+once per turn rather than per call, and treat a connection error from the real
+request as the offline signal.
+
+### J7. RAG refresh rebuilds more than it needs
+
+When any file changes, `initialize_knowledge_base` (`rag/indexing.py:302`)
+runs again from the start:
+
+- it re-reads and re-chunks **every** file, not just the changed ones (40 ms
+  for 300 files, more for PDFs);
+- it rebuilds the BM25 index over all chunks (**325 ms** for 6,000 chunks);
+- it creates a new Chroma client.
+
+Change detection itself is cheap (5.5 ms), and only changed chunks are
+re-embedded, so embedding cost is already incremental. The rest grows with the
+corpus, and PDF text extraction in particular is slow.
+
+**Fix:** keep the parsed chunks for unchanged files (in memory, or stored with
+the index state), re-parse only changed files, update BM25 by replacing the
+changed files' entries, and reuse the existing Chroma client.
+
+### J8. Semantic chunking calls the embedding model for every file
+
+With `chunking.strategy` set to `semantic`, `_split_into_chunks` is passed the
+embedding function (`rag/indexing.py:428`) and embeds every sentence window.
+Because every file is re-split on each refresh (J7), **all files are sent to
+the embedding model again on every refresh**, even when only one changed. On a
+large corpus this can take minutes.
+
+**Fix:** never re-split files whose fingerprint has not changed (follows from
+J7).
+
+### J9. BM25 scores every chunk
+
+`HybridRAGRetriever.similarity_search` (`rag/retrieval.py:41`) calls
+`get_scores`, which scores all chunks, then picks the top results. It took 5.7
+ms per query for 6,000 chunks and grows linearly; at the 20,000-chunk limit
+(`rag.max_documents`) it would be roughly 20 ms. Acceptable now.
+
+**Fix:** if the corpus grows, use SQLite FTS5 for keyword search (already used
+for memory), which uses an index instead of scoring every chunk. This also
+fits the core-only install plan (step 11.6).
+
+### J10. Database settings and blocking calls
+
+- SQLite uses the default `delete` journal mode with `synchronous=FULL`.
+  Single writes are fast (0.2 ms), but WAL mode lets reads and writes overlap,
+  which helps when tool calls run in parallel. WAL with `synchronous=NORMAL`
+  took 0.1 ms per write.
+- The async runtime makes about 75 direct `memory.*` calls on the event loop,
+  and only 1 goes through `asyncio.to_thread`. Each is fast, but the slower
+  ones (episode search, task listing, retention pruning) block streaming and
+  the live overlay while they run.
+
+**Fix:** turn on WAL mode (and keep `busy_timeout`), and move the slower
+queries off the event loop. This fits step 4.7.
+
+---
+
+## Part K: Hard-Coded Values (Not Read from the Config File)
+
+The config file covers most user-facing settings: 114 keys are read from it.
+This part lists values that are still fixed in the code, values that are
+defined twice, and values that should stay in code on purpose.
+
+### K1. Read from config but missing from the defaults
+
+These keys work if set by hand, but they are not in `DEFAULT_CONFIG`, so they
+never appear in the generated `~/.private_agent.conf` or the README.
+
+| Key | Default | Where |
+|---|---|---|
+| `media.max_decoded_image_pixels` | 20,000,000 | `config.py:706` |
+| `media.max_media_file_bytes` | 25 MB | `config.py:709` |
+| `media.max_video_seconds` | 120 | `config.py:713` |
+
+### K2. Sandbox resource limits
+
+`code_tasks/__init__.py:259–262` passes fixed limits to `prlimit`:
+
+| Limit | Value |
+|---|---|
+| CPU time | 180 s |
+| Address space (memory) | 2 GiB |
+| Processes | 128 |
+| Largest file written | 512 MiB |
+
+A 2 GiB address-space limit is likely to break builds that reserve more
+virtual memory than they use (Java, Node, Rust). None of these can be changed
+without editing the code.
+
+### K3. Timeouts and leases
+
+| Value | Where |
+|---|---|
+| Local provider discovery timeout 1.5 s, at most 8 endpoints | `agent/local_runtimes.py:13–14` |
+| Git inspection timeout 5 s | `tools/filesystem.py:39` |
+| SQLite connect timeout 2 s and busy timeout 2,000 ms | `database/memory.py:64`, `:70`, `tools/planner.py:80` |
+| Read timeout for SQLite files indexed by RAG, 5 s | `rag/indexing.py:144` |
+| Task lease 180 s, renewed every 30 s | `agent/runtime.py:201–202` |
+| Lease defaults of 300 s and 180 s in two different methods, both limited to 30–3,600 s | `database/memory.py:1223`, `:1310` |
+| "Slow operation" message threshold of 2 s, repeated 6 times | `runtime.py:2973`, `:3765`, `:3872`, `:5253`, `:5296`, `:5946` |
+| Plugin timeout 30 s, at most 100 calls | `plugins.py:19–20` |
+
+### K4. Output and context sizes
+
+| Value | Where |
+|---|---|
+| Tool output preview 500 characters | `runtime.py:196` |
+| Workspace search: 10,000 files, 16 MB, 12,000 characters of output; match lines cut to 500 or 300 characters | `tools/filesystem.py:36–38`, `:748`, `:816` |
+| Git output cut to 1,000 characters | `tools/filesystem.py:894` |
+| `/add` folder context: 100 files, 10,000 entries scanned, a fixed list of file types | `agent/interactive.py:49–51` |
+| Compaction source text capped at 6,000 tokens, regardless of the model's context size | `agent/compaction.py:12` |
+| Memory context: episode fields cut to 200, 300, 400, 600, 1,200 or 1,600 characters; 100 episode matches searched; 5 learned items shown | `runtime.py:451–588`, `:575`, `:610` |
+| Up to 10 planning citations kept | `runtime.py:5859`, `:5984` |
+| `/tasks` lists 50 tasks | `database/memory.py:1010` |
+| At most 16 test commands with at most 64 arguments each | `config.py:775` |
+
+`max_memory_context_tokens` is configurable, but the per-field caps inside it
+are not.
+
+### K5. RAG
+
+| Value | Where |
+|---|---|
+| Supported file types | `rag/indexing.py:47` |
+| SQLite files: 10 rows per chunk, cells cut to 200 characters | `rag/indexing.py:54–55` |
+| File types treated as Markdown or code by `auto` chunking | `rag/chunking.py:28–29` |
+| Name patterns that mark embedding models, written twice | `agent/local_runtimes.py:89`, `runtime.py:3108` |
+
+### K6. External services and models
+
+| Value | Where |
+|---|---|
+| IP location services `ipwho.is` and `ipapi.co` | `tools/location.py:24–26` |
+| Open-Meteo geocoding, forecast and archive URLs | `tools/location.py:28–30` |
+| Weather limits: 16 days ahead, 90 days back, 1 MB responses | `tools/location.py:17–20` |
+| DuckDuckGo search URL | `tools/network.py:602` |
+| Tokenizer `cl100k_base`, used for every model | `agent/prompts.py:45` |
+| Online base URL `api.openai.com`, written again outside the config defaults | `agent/providers.py:347` |
+
+For a privacy-focused tool, the location and search services should be
+swappable, for example for a self-hosted SearXNG or Nominatim.
+
+### K7. Paths
+
+| Value | Where |
+|---|---|
+| Config file always `~/.private_agent.conf`; no environment variable or `--config` flag | `config.py:13` |
+| `SNAPSHOT_DIR` resolved against the current folder at import time, not the workspace (it is exported but not used elsewhere) | `sandbox/linux.py:8` |
+
+### K8. Plan limits defined twice
+
+The plan limits are written both in the tool schemas
+(`tools/schemas.py:174–232`) and in the database checks
+(`database/memory.py:726–871`): 20 steps, 10 items per list, 2,000-character
+goals, 1,000-character step descriptions, 64-character step IDs, a
+1,000-character approval scope, and research references of up to 1,500
+characters each and 10,000 in total. If one changes and not the other, the
+schema accepts a plan that the database then rejects.
+
+### K9. Every default written twice
+
+Each setting has its default once in `DEFAULT_CONFIG` and again as the
+fallback where it is read. For example, the shell timeout of 30 appears at
+`config.py:139` and `config.py:698`, and the Ollama URL at line 37 and line
+509. Changing a default means editing both, and they can silently disagree.
+
+### K10. Values that should stay in code
+
+These are correct as fixed values, because a config file should not be able to
+weaken safety:
+
+- secret and sensitive-field patterns (`run_logging.py:35–49`,
+  `code_tasks/__init__.py:39`);
+- private network ranges (`tools/network.py:41`);
+- tool permission groups (`agent/permissions.py`, `tools/__init__.py:91–102`);
+- schema version, step statuses and weather codes.
+
+The risky-command word list (`sandbox/linux.py:64–86`) and the RAG file types
+could be configurable, but only in the stricter direction: adding words, or
+allowing a subset of file types.
+
+---
+
+## Part L: Fix Roadmap
+
+The steps are grouped into phases by topic (Phases 1–14 below). **Do not work
+through the phases in number order.** Follow the implementation order in
+section L1, which runs from the easiest step to the hardest while respecting
+what each step needs first.
+
+### L1. Implementation order: easiest to hardest
+
+**How the order was made:**
+
+- Each step has its own **difficulty**: Trivial (under an hour), Easy (a few
+  hours), Medium (one to two days), Hard (several days) or Hardest (a week or
+  more, touching much of the code).
+- A step is placed in the **stage** of the hardest step it needs first. For
+  example, "Stop one turn without exiting" (6.4) is Medium on its own, but it
+  needs the shared agent loop (4.2, Hardest), so it is in Stage 5, right after
+  4.2. This is why some Easy steps appear late: they unlock only after a hard
+  refactor.
+- Within a stage, a step always comes after the steps it needs, and easier
+  steps come first.
+- Every step needs step 1.1 (a working `pytest`), which is not repeated in the
+  "Needs first" column.
+- Struck-out steps (6.14, 6.15, 8.1, 8.9) were replaced by other steps and are
+  left out. 140 steps remain.
+
+**Summary:**
+
+| Stage | Steps | What it covers |
+|---|---|---|
+| 1: Trivial | 15 | Typos, docs, config keys, POSIX-only, tokenizer bundling, caching the internet check, WAL mode |
+| 2: Easy | 22 | Linting, test skips, quick planning and RAG fixes, Markdown replies, coloured diffs, platform detection, `doctor`, DNS caching |
+| 3: Medium | 36 | The remaining test failures and CI, the `Settings` model and everything configurable, logging, search and RAG improvements, lazy imports |
+| 4: Hard | 25 | `ToolContext`, splitting commands and memory, async tools, the sandbox interface, provider adapters |
+| 5: Hardest | 42 | The shared agent loop and everything built on it: permission rules, session resume, hooks, planning mode, capability packs, router, overlays, orchestrator, macOS sandbox |
+
+**Milestones along the way:**
+
+- After **step 15**: the app runs cleanly in WSL, makes no tokenizer download,
+  and has its hidden config keys documented.
+- After **step 37**: the quick wins are done (Markdown replies, coloured diffs,
+  better planning and RAG, `doctor`, DNS caching).
+- After **step 41**: the test suite is green and CI runs on every PR.
+- After **step 98**: the core is restructured, and every local provider works
+  (not only Ollama).
+- After **step 140**: everything in this file is done.
+
+#### Stage 1: Trivial fixes
+
+15 steps.
+
+| # | Step | Task | Difficulty | Needs first |
+|---|---|---|---|---|
+| 1 | 1.1 | Fix pytest path, install dev tools, switch VS Code to pytest | Trivial | — |
+| 2 | 2.2 | Fix the `VISIBILE_REASONING` typo | Trivial | — |
+| 3 | 2.4 | Fix stale links in `copilot-instructions.md` | Trivial | — |
+| 4 | 2.5 | Add `check=` to every `subprocess.run` | Trivial | — |
+| 5 | 3.3 | Move the offline environment variables into startup | Trivial | — |
+| 6 | 5.8 | Decide on `requirements.txt` | Trivial | — |
+| 7 | 5.9 | Remove the `sys.path` edit in `main.py` | Trivial | — |
+| 8 | 8.16 | Document example MCP configs | Trivial | — |
+| 9 | 10.6 | Multi-line input | Trivial | — |
+| 10 | 11.1 | Declare POSIX only, exit on native Windows | Trivial | — |
+| 11 | 13.1 | Bundle the tokenizer vocabulary | Trivial | — |
+| 12 | 13.3 | Cache the internet check | Trivial | — |
+| 13 | 13.4 | SQLite WAL mode | Trivial | — |
+| 14 | 14.1 | Add the 3 hidden media keys to the defaults | Trivial | — |
+| 15 | 14.2 | `PRIVATE_AGENT_CONFIG` and `--config` | Trivial | — |
+
+#### Stage 2: Easy, independent fixes
+
+22 steps.
+
+| # | Step | Task | Difficulty | Needs first |
+|---|---|---|---|---|
+| 16 | 1.2 | Skip tests when `bwrap` or media libraries are missing | Easy | — |
+| 17 | 1.4 | Add ruff config, auto-fix and format | Easy | — |
+| 18 | 1.6 | Add pre-commit hooks | Trivial | 1.4 |
+| 19 | 2.1 | Fix the 7 loop-variable closure bugs (`B023`) | Easy | — |
+| 20 | 2.3 | Remove the pytest check from `config.py` | Easy | — |
+| 21 | 5.4 | Rewrite the risky-command check with `shlex` | Easy | — |
+| 22 | 5.5 | Reciprocal rank fusion and better BM25 tokenizing | Easy | — |
+| 23 | 6.2 | Paged `read_local_file` (offset and limit) | Easy | — |
+| 24 | 7.1 | Read-only tools in planning mode | Easy | — |
+| 25 | 7.2 | Save a plan in one model round | Easy | — |
+| 26 | 7.3 | Pass the whole plan to the model when it runs | Easy | — |
+| 27 | 8.3 | RAG relevance cut-off and more chunks | Easy | — |
+| 28 | 8.7 | Documents-only answer mode | Easy | 8.3 |
+| 29 | 10.1 | Fix the 4 startup bugs | Easy | — |
+| 30 | 10.2 | Markdown replies with code highlighting | Easy | — |
+| 31 | 10.3 | Coloured diffs in edit previews | Easy | — |
+| 32 | 11.2 | `platform_support.py` detection | Easy | — |
+| 33 | 11.10 | Clear webcam and microphone messages | Trivial | 11.2 |
+| 34 | 11.3 | `private-agent doctor` command | Easy | 11.2 |
+| 35 | 11.4 | WSL warnings and Ollama setup | Easy | 11.2 |
+| 36 | 11.12 | Setup docs per platform | Easy | 11.3 |
+| 37 | 13.2 | Cache DNS lookups | Easy | — |
+
+#### Stage 3: Medium (needs `Settings`, the green test suite or logging)
+
+36 steps.
+
+| # | Step | Task | Difficulty | Needs first |
+|---|---|---|---|---|
+| 38 | 1.3 | Investigate and fix the 8 remaining test failures | Medium | 1.2 |
+| 39 | 1.5 | Add the GitHub Actions CI workflow | Easy | 1.3, 1.4 |
+| 40 | 11.11 | CI matrix (Linux, arm64, macOS, core-only) | Easy | 1.5 |
+| 41 | 13.10 | Performance checks in CI | Easy | 1.5 |
+| 42 | 3.1 | Create the typed `Settings` model | Medium | — |
+| 43 | 3.5 | Set the workspace root explicitly at startup | Easy | 3.1 |
+| 44 | 14.10 | Fix `SNAPSHOT_DIR` | Trivial | 3.5 |
+| 45 | 6.1 | Load `AGENTS.md` project instructions | Easy | 3.1 |
+| 46 | 6.9 | Project-level config file | Easy | 3.1 |
+| 47 | 4.1 | Characterization tests for the agent loop | Medium | 1.3 |
+| 48 | 5.2 | Move diagnostics to `logging` | Medium | 1.3 |
+| 49 | 8.2 | Keep diagnostics apart from replies (rest of 8.2) | Trivial | 5.2, 10.2 |
+| 50 | 5.3 | Narrow the blind `except Exception` blocks | Medium | 5.2 |
+| 51 | 5.6 | Skill front matter and embedding matching | Medium | — |
+| 52 | 5.7 | Web search provider interface (SearXNG first) | Medium | — |
+| 53 | 8.12 | More search results and paged web fetch | Easy | 5.7 |
+| 54 | 8.5 | Rewrite follow-up questions before searching | Medium | 8.3 |
+| 55 | 8.6 | Re-rank retrieved chunks | Medium | 5.5 |
+| 56 | 8.8 | More document formats | Medium | — |
+| 57 | 8.10 | Several document collections | Medium | 3.1 |
+| 58 | 8.18 | Document creation tools | Medium | — |
+| 59 | 10.4 | Fewer startup questions, flags, remembered choices | Medium | 3.1 |
+| 60 | 10.5 | One console, theme and message levels | Medium | 5.2 |
+| 61 | 10.10 | UI cosmetics | Easy | 10.5 |
+| 62 | 11.5 | Lazy imports and optional extras | Medium | 3.3 |
+| 63 | 11.6 | Keyword-only document search fallback | Medium | 11.5 |
+| 64 | 13.6 | Incremental RAG refresh | Medium | — |
+| 65 | 13.9 | FTS5 keyword search for large corpora | Medium | 11.6 |
+| 66 | 14.3 | Single source of defaults | Medium | 3.1 |
+| 67 | 14.4 | Configurable sandbox limits | Easy | 14.3 |
+| 68 | 14.5 | Configurable timeouts and leases | Easy | 14.3 |
+| 69 | 14.6 | Configurable output and context sizes | Easy | 14.3 |
+| 70 | 14.7 | Configurable RAG values | Easy | 14.3 |
+| 71 | 14.8 | Configurable external services | Easy | 5.7, 14.3 |
+| 72 | 14.9 | Plan limits defined once | Easy | 14.3 |
+| 73 | 14.11 | Stricter-only safety lists in config | Easy | 5.4, 14.3 |
+
+#### Stage 4: Hard (core refactors and what they unlock)
+
+25 steps.
+
+| # | Step | Task | Difficulty | Needs first |
+|---|---|---|---|---|
+| 74 | 3.2 | Move every module to `Settings`, delete old constants | Hard | 3.1 |
+| 75 | 3.4 | Create `ToolContext` and remove tool globals | Hard | 3.1 |
+| 76 | 7.9 | More than one active plan | Easy | 3.4 |
+| 77 | 8.4 | `search_documents` tool | Easy | 3.4 |
+| 78 | 4.4 | Split slash commands into `agent/commands/` | Hard | 4.1 |
+| 79 | 4.6 | Explicit `__all__` in `agent/__init__.py` | Easy | 4.4 |
+| 80 | 6.10 | Custom slash commands from Markdown | Easy | 4.4 |
+| 81 | 10.9 | Arrow-key menus | Medium | 4.4 |
+| 82 | 4.5 | Split `PersistentMemory` into repositories | Hard | 1.3 |
+| 83 | 4.7 | SQLite connection per thread or a lock | Easy | 4.5 |
+| 84 | 12.8 | Store the provider with sessions and tasks | Easy | 4.5 |
+| 85 | 13.8 | Slow database calls off the event loop | Easy | 4.7 |
+| 86 | 5.1 | Make network and shell tools async | Hard | 1.3 |
+| 87 | 11.7 | Sandbox interface with backends | Hard | 5.1 |
+| 88 | 11.9 | Termux support | Hard | 10.5, 11.5, 11.7 |
+| 89 | 12.1 | Provider adapter interface | Hard | 3.1 |
+| 90 | 12.2 | Make Ollama packages optional | Easy | 11.5, 12.1 |
+| 91 | 12.6 | Filter embedding models; several servers per type | Easy | 12.1 |
+| 92 | 13.5 | Lazy imports and background indexing | Easy | 11.5, 12.2 |
+| 93 | 12.3 | Capability detection for every provider | Medium | 12.1 |
+| 94 | 12.4 | Provider presets | Medium | 12.1 |
+| 95 | 12.5 | Detect installed-but-stopped providers | Medium | 12.4 |
+| 96 | 12.7 | New provider selection rules | Medium | 10.4, 12.5 |
+| 97 | 12.11 | Embeddings from any provider | Hard | 11.6, 12.1 |
+| 98 | 12.13 | Hardware status and benchmark per adapter | Easy | 12.1, 12.11 |
+
+#### Stage 5: Hardest (the shared agent loop and everything built on it)
+
+42 steps.
+
+| # | Step | Task | Difficulty | Needs first |
+|---|---|---|---|---|
+| 99 | 4.2 | Extract one shared agent loop | Hardest | 3.4, 4.1 |
+| 100 | 6.4 | Stop one turn without exiting | Medium | 4.2 |
+| 101 | 7.5 | `/plan` stays on, with `ask_user` | Medium | 4.2, 4.4 |
+| 102 | 7.6 | Markdown plan with one-choice approval | Medium | 7.5 |
+| 103 | 7.8 | Time budget per plan step | Medium | 4.2 |
+| 104 | 7.10 | Text-plan fallback for non-tool models | Medium | 7.6 |
+| 105 | 9.1 | Typed event bus | Medium | 4.2 |
+| 106 | 9.8 | `agent_step_timings` table | Easy | 4.5, 9.1 |
+| 107 | 10.7 | Readable tool requests and full-output view | Easy | 9.1 |
+| 108 | 9.9 | Time estimator | Medium | 9.8 |
+| 109 | 4.3 | Single `PermissionPolicy` for every tool call | Hard | 4.2 |
+| 110 | 6.5 | Allow/deny permission rules | Medium | 4.3 |
+| 111 | 12.12 | Configured non-loopback local addresses | Easy | 6.5, 12.1 |
+| 112 | 6.8 | Non-interactive `-p` mode | Medium | 4.2, 6.5 |
+| 113 | 9.11 | JSON event output | Easy | 6.8, 9.1 |
+| 114 | 6.11 | Hooks before and after tool calls | Medium | 4.2, 4.3 |
+| 115 | 6.12 | Git write tools (branch, commit, PR) | Medium | 4.3, 6.5 |
+| 116 | 7.4 | Replace the regex coding gate | Medium | 4.3 |
+| 117 | 8.15 | Auto test and lint after edits, LSP | Medium | 6.11 |
+| 118 | 8.19 | Extra approved folders outside the workspace | Medium | 6.5 |
+| 119 | 10.8 | Better approval prompts | Medium | 6.5 |
+| 120 | 6.3 | Shell: timeouts, pipes, background processes | Hard | 4.3, 5.1 |
+| 121 | 7.7 | Automatic step validation | Medium | 6.3 |
+| 122 | 8.17 | Calculator / sandboxed Python tool | Medium | 6.3 |
+| 123 | 6.6 | Session resume (`--continue`, `--resume`) | Hard | 4.2, 4.5 |
+| 124 | 6.7 | `/rewind` from snapshots | Medium | 6.6 |
+| 125 | 8.11 | Chat commands (`/new`, `/retry`, `/edit`, `/export`) | Medium | 6.6 |
+| 126 | 6.13 | Subagents | Hard | 3.4, 4.2 |
+| 127 | 9.2 | Capability packs | Hard | 3.4, 4.2 |
+| 128 | 13.7 | Stable prompt prefix for prompt caching | Easy | 9.2 |
+| 129 | 8.20 | Clipboard, scheduling, voice | Hard | 9.2 |
+| 130 | 9.3 | Turn router | Hard | 9.2 |
+| 131 | 9.4 | `enable_capability` escalation | Medium | 4.3, 9.3 |
+| 132 | 8.13 | Research loop with saved report | Hard | 8.4, 8.12, 9.3 |
+| 133 | 8.14 | Source quality checks and specialist sources | Hard | 8.13 |
+| 134 | 9.5 | Context manager with per-source budgets | Hard | 9.2 |
+| 135 | 9.7 | Live status overlay | Hard | 9.1 |
+| 136 | 9.10 | Timeline overlay (Ctrl+T) | Medium | 9.7, 9.9 |
+| 137 | 12.9 | Provider fallback on resume | Hard | 6.6, 12.7, 12.8 |
+| 138 | 12.10 | Fallback when a provider stops mid-session | Medium | 12.9 |
+| 139 | 9.6 | Task orchestrator | Hardest | 7.5, 7.6, 7.8, 9.3 |
+| 140 | 11.8 | macOS Seatbelt sandbox | Hardest | 11.7 |
 
 Rules for every step:
 
@@ -1601,8 +2096,7 @@ Rules for every step:
 
 ### Phase 6: Features from Claude Code and Codex
 
-Steps are in priority order: the cheapest, highest-value features first, and
-the features that depend on earlier phases later.
+For when to do each step, see the implementation order in section L1.
 
 | Step | Task | Fixes | Depends on | Done when |
 |---|---|---|---|---|
@@ -1624,8 +2118,8 @@ the features that depend on earlier phases later.
 
 ### Phase 7: Planning mode
 
-Steps with no dependency ("—") are small and can be done any time after
-Phase 2, before the big restructuring.
+Steps 7.1–7.3 have no dependencies and are in Stage 2 of the implementation
+order (section L1); the rest come after the shared agent loop.
 
 | Step | Task | Fixes | Depends on | Done when |
 |---|---|---|---|---|
@@ -1642,9 +2136,8 @@ Phase 2, before the big restructuring.
 
 ### Phase 8: Role coverage
 
-Steps are in priority order within the phase. Do steps 9.2–9.3 (capability
-packs and turn router) first, so each step here adds its tools and prompts to
-the right pack without affecting the others.
+For when to do each step, see section L1. Where possible, add new tools to
+the right capability pack (steps 9.2–9.3) instead of as special cases.
 
 | Step | Task | Fixes | Depends on | Done when |
 |---|---|---|---|---|
@@ -1691,7 +2184,8 @@ profiles of step 8.1, and step 9.7 replaces the simple status line of step
 
 ### Phase 10: User interface
 
-Steps 10.1–10.3 are small and can be done right after Phase 2.
+Steps 10.1–10.3 are small and are in Stage 2 of the implementation order
+(section L1).
 
 | Step | Task | Fixes | Depends on | Done when |
 |---|---|---|---|---|
@@ -1708,8 +2202,8 @@ Steps 10.1–10.3 are small and can be done right after Phase 2.
 
 ### Phase 11: Platform support (POSIX only)
 
-Steps 11.1–11.4 make the app work in WSL without hassle and should be done
-early, right after Phase 1.
+Step 11.1 is in Stage 1 and steps 11.2–11.4 in Stage 2 of the implementation
+order (section L1), so the app runs cleanly in WSL early.
 
 | Step | Task | Fixes | Depends on | Done when |
 |---|---|---|---|---|
@@ -1728,9 +2222,9 @@ early, right after Phase 1.
 
 ### Phase 12: Local provider independence
 
-Steps 12.1–12.3 can start after Phase 3. Step 12.9 (resume fallback) needs
-session resume (6.6) first. This phase replaces step 8.9 (embedding
-providers).
+Steps 12.1–12.8 and 12.11 are in Stage 4 and the rest in Stage 5 of the
+implementation order (section L1). Step 12.9 (resume fallback) needs session
+resume (6.6) first. This phase replaces step 8.9 (embedding providers).
 
 | Step | Task | Fixes | Depends on | Done when |
 |---|---|---|---|---|
@@ -1748,7 +2242,56 @@ providers).
 | 12.12 | Allow explicitly configured non-loopback local addresses (WSL host gateway, home network) with a clear warning | I1m, H3e | 12.1, 6.5 | A configured gateway address works after the user confirms it |
 | 12.13 | Hardware status through the adapter where available, with a clear "not exposed by this provider" message otherwise; make the RAG benchmark use the embedding adapter | I1f, I1h | 12.1, 12.11 | `/hardware-status` and the benchmark work with every adapter |
 
+### Phase 13: Performance
+
+Steps 13.1, 13.3 and 13.4 are in Stage 1 and step 13.2 in Stage 2 of the
+implementation order (section L1). They are small and give the largest
+gains.
+
+| Step | Task | Fixes | Depends on | Done when |
+|---|---|---|---|---|
+| 13.1 | Ship the `cl100k_base` vocabulary with the package (or fetch it once at install time with consent), set `TIKTOKEN_CACHE_DIR` under `~/.private_agent/`, and warn visibly on fallback | J3 | — | No network request happens on token counting, including offline and after a reboot, with a test that blocks network access |
+| 13.2 | Cache validated DNS results for a short time (bounded, rules re-checked on each use), and resolve in a thread with a deadline instead of a subprocess | J5 | — | A second request to the same host does no lookup, and a stuck resolver still times out, with tests for both |
+| 13.3 | Cache the internet check for about 30 seconds, check once per turn, and use real request errors as the offline signal | J6 | — | Five web calls while offline wait at most one timeout |
+| 13.4 | Turn on SQLite WAL mode with `synchronous=NORMAL` | J10 | — | All database tests pass with WAL on |
+| 13.5 | Import Chroma, Ollama packages and media libraries lazily, and build the RAG index in the background during provider selection | J2 | 11.5, 12.2 | Startup to the first question is under 0.5 s on this machine |
+| 13.6 | Incremental RAG refresh: keep chunks for unchanged files, re-parse only changed files, update BM25 in place, reuse the Chroma client | J7, J8 | — | Changing one file in a 300-file corpus refreshes in under 100 ms (excluding embedding), and semantic chunking embeds only the changed file |
+| 13.7 | Keep the system prompt and tool definitions identical between turns so local servers can reuse their prompt cache, and send only the needed tools (step 9.2) | J4 | 9.2 | Plain chat sends no tool definitions, and repeated turns keep the same prompt prefix |
+| 13.8 | Move slow database calls (episode search, task listing, retention pruning) off the event loop | J10 | 4.7 | No database call over 5 ms runs on the event loop, checked with asyncio debug mode |
+| 13.9 | Use SQLite FTS5 for keyword search when the corpus is large | J9 | 11.6 | Keyword search at 20,000 chunks stays under 10 ms |
+| 13.10 | Add a performance check to CI: startup import time, a RAG refresh on a fixed corpus, and token counting with the network blocked | J1 | 1.5 | CI fails if startup or refresh time grows by more than 20% |
+
+### Phase 14: Configuration
+
+Builds on the `Settings` model from step 3.1. Steps 14.1 and 14.2 have no
+dependencies and are in Stage 1 of the implementation order (section L1).
+
+| Step | Task | Fixes | Depends on | Done when |
+|---|---|---|---|---|
+| 14.1 | Add the 3 hidden media keys to `DEFAULT_CONFIG` and the README | K1 | — | The keys appear in a newly generated config file |
+| 14.2 | Add a `PRIVATE_AGENT_CONFIG` environment variable and a `--config` flag | K7 | — | The app loads a config from another path, with a test |
+| 14.3 | Make the `Settings` model the single source of defaults and remove the repeated fallback values | K9 | 3.1 | Each default appears in exactly one place, checked by a test that compares the model with the generated file |
+| 14.4 | Move the sandbox limits (CPU, memory, processes, file size) into config, with safe minimums and maximums, and raise the memory default | K2 | 14.3 | A build that needs more than 2 GiB of address space can run after changing the setting |
+| 14.5 | Move timeouts and leases into config, use one lease default, and use one "slow operation" threshold | K3 | 14.3 | No timeout or lease value is written as a literal outside the settings |
+| 14.6 | Move output and context sizes into config; derive the compaction cap from the model's context window | K4 | 14.3 | The listed limits can be changed in config, with tests at the limits |
+| 14.7 | Move RAG values into config (SQLite rows per chunk, cell size, chunking file types), and keep one shared list of embedding-model name patterns | K5 | 14.3 | Embedding-name patterns are defined once |
+| 14.8 | Make external services configurable (location, geocoding, weather, search URLs and limits, tokenizer), and remove the second copy of the online base URL | K6 | 14.3, 5.7 | Each service URL can be replaced by a self-hosted one, with tests |
+| 14.9 | Define plan limits once and use them for both the tool schemas and the database checks | K8 | 14.3 | Changing one limit changes both, with a test |
+| 14.10 | Remove `SNAPSHOT_DIR` or resolve it from the workspace at use time | K7 | 3.5 | No snapshot path is resolved at import time |
+| 14.11 | Allow the risky-command list and RAG file types to be extended in config only in the stricter direction | K10 | 5.4, 14.3 | Config can add risky words but cannot remove built-in ones, with tests |
+
 ### Progress tracker
+
+Track progress by stage (section L1), since that is the order of work. The
+phase list below shows coverage by topic.
+
+- [ ] Stage 1: Trivial (steps 1–15)
+- [ ] Stage 2: Easy (steps 16–37)
+- [ ] Stage 3: Medium (steps 38–73)
+- [ ] Stage 4: Hard (steps 74–98)
+- [ ] Stage 5: Hardest (steps 99–140)
+
+By phase:
 
 - [ ] Phase 1: Safety net (1.1–1.6)
 - [ ] Phase 2: Quick fixes and real bugs (2.1–2.5)
@@ -1762,3 +2305,5 @@ providers).
 - [ ] Phase 10: User interface (10.1–10.10)
 - [ ] Phase 11: Platform support, POSIX only (11.1–11.12)
 - [ ] Phase 12: Local provider independence (12.1–12.13)
+- [ ] Phase 13: Performance (13.1–13.10)
+- [ ] Phase 14: Configuration (14.1–14.11)
